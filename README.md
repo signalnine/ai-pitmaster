@@ -1,7 +1,7 @@
 # AI pitmaster
 SDR + LLM + SMS + Meat + Fire
 
-this uses an rtl-sdr dongle to read wireless bbq thermometer data and feeds it to claude for realtime cooking advice. it's intended for use with charcoal or wood smokers but will probably work with anything as long as you tell Claude what you're working with. it'll alert you via SMS if you need to add fuel, adjust air intake, etc. it can also do a pretty decent estimate of when your cook will likely be done. interface is natural language CLI. 
+this uses an rtl-sdr dongle to read wireless bbq thermometer data and feeds it to Claude Sonnet 3.5 for realtime cooking advice. it's intended for use with charcoal or wood smokers but will probably work with anything as long as you tell Claude what you're working with. it'll alert you via SMS if you need to add fuel, adjust air intake, etc. it can also do a pretty decent estimate of when your cook will likely be done. interface is natural language CLI. 
 
 ## what it does
 
