@@ -78,6 +78,7 @@ automatic alerts for:
 
 ### no temp data
 - check rtl_433 sees your thermometer: `rtl_433 -f 433.92M`
+- if you see something like `Failed to open rtlsdr device #0` there's probably another rtl_433 process, sometimes it doesn't shutdown gracefully, so just `pkill` it
 - make sure thermometer is on and transmitting
 - move dongle closer or use better antenna
 
