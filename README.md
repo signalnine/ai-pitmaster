@@ -50,7 +50,7 @@ export BBQ_PHONE=+15555551234  # optional but recommended
 ## usage
 
 ```bash
-python3 bbq-monitor.py
+python3 ai-pitmaster.py
 ```
 
 it'll ask for meat type, weight, target temps. then rtl_433 starts automatically and begins monitoring
