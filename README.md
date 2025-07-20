@@ -16,7 +16,7 @@ this uses an rtl-sdr dongle to read wireless bbq thermometer data and feeds it t
 ### sdr dongle
 any rtl2832u based usb dongle. the rtl-sdr.com v4 is good, or grab a nooelec nesdr for a few bucks less.
 
-### thermometer
+### wireless thermometer
 thermopro TP12 is what i use. any 433mhz bbq thermometer that rtl_433 supports should work. check `rtl_433 -L` for the full list
 
 the TP12 has two probes - one for pit temp, one for meat. broadcasts every ~12 seconds on 433.92mhz
