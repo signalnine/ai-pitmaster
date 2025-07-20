@@ -5,9 +5,9 @@ this uses an rtl-sdr dongle to read wireless bbq thermometer data and feeds it t
 
 ## what it does
 
-- reads temp data from thermopro tp12 (or similar) wireless thermometers via rtl_433
+- reads temp data from Thermopro TP12 (or similar) wireless thermometers via rtl_433
 - maintains conversation with claude about your cook, ask it anything
-- texts you when thing go sideways
+- texts you when things go sideways
 - tracks ambient temp from whatever weather stations are nearby
 - detects the stall using actual math: http://www.tlhiv.org/papers/1-33-T-SouthernBarbeque-TeacherVersion.pdf
 
