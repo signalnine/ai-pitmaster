@@ -105,4 +105,4 @@ in 2-3hrs now. maybe bump pit to 250 if you're in a hurry but 225 is fine
 - logs everything to conversation history. could add file logging if you want
 - the mathematical stall detection is overkill but it works really well 
 - ambient temp from weather stations is surprisingly useful, you might need to adjust for your (or your neighbor's in my case) weather station model
-- claude costs like $0.50 per cook at current prices, you could very easily port this to work on your locally hosted LLM or OpenAI or w/e
+- claude costs like $0.25 per cook at current prices, you could very easily port this to work on your locally hosted LLM or OpenAI or w/e
