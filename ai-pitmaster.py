@@ -1,144 +1,124 @@
 #!/usr/bin/env python3
+"""
+AI Pitmaster:
+– Tracks ThermoPro TP12 temps via rtl_433
+– Chats with Claude (Anthropic) for advice
+– Sends SMS alerts via TextBelt
+– Fits a 5‑parameter logistic curve on Stage I to predict wrap/finish times
+"""
+
 import json
 import sys
 import os
 import threading
 import queue
-from datetime import datetime
-from collections import deque
-import anthropic
-import requests
 import subprocess
+import math
+from datetime import datetime, timedelta
+from collections import deque
+
+import requests
+import anthropic
+
+# ----- optional SciPy for curve fitting -------------------------------------
+try:
+    from scipy.optimize import curve_fit          # needs scipy >= 1.9
+except ModuleNotFoundError:
+    curve_fit = None
+# ----------------------------------------------------------------------------
 
 PITMASTER_WISDOM = """
 Key BBQ knowledge:
 - Target pit temp: 225-235°F for low and slow
 - Brisket done at 195-205°F internal (probe slides in like butter)
 - The stall hits around 150-170°F, can last 5+ hours
-- The stall can be shortened by increasing cook temperature but it's a balancing act- too hot and it risks making the meat dry and tough, it can be done up to 325F for pork shoulder but brisket is riskier and you should at most take temps up to 275F if you have to for timing purposes
-- Texas Crutch (wrapping in foil or paper at 150°F) powers through stall by trapping moisture and preventing evaporation, however that can soften the bark
-- Inject with beef broth for moisture (1oz per pound)
-- Salt 12-24hrs ahead, or 2-4hr minimum
+- The stall can be shortened by increasing cook temperature but it's a balancing act – too hot and it risks making the meat dry and tough; it can be done up to 325°F for pork shoulder but brisket is riskier and you should at most take temps up to 275°F if you have to for timing purposes
+- Texas Crutch (wrapping in foil or paper at 150°F) powers through stall by trapping moisture but can soften the bark
+- Inject with beef broth for moisture (≈1 oz per lb)
+- Salt 12‑24 h ahead (2‑4 h minimum)
 - Trim fat cap to 1/4", remove silverskin
-- Brisket can take ~1.5hr/lb at 225°F, ~1.2hr/lb at 250F, but varies per cook.
+- Brisket can take ~1.5 h/lb at 225°F, ~1.2 h/lb at 250°F, but varies per cook
 - Smoking meat has three stages:
-   Stage I (pre-stall): logistic growth model
-   Stage II (stall): linear model
-   Stage III (post-stall): logistic growth model
-   The stall is defined as when |α(t)| ≤ 0.03 where α(t) = f'(t)/f(t)
-   The stall typically occurs around 150-170°F internal temp
-   An example 10.7lb brisket took 11.35 hours total
-   The stages were roughly: Stage I (0-6.6hrs), Stage II (6.6-10hrs), Stage III (10-11.35hrs)
-- Let rest in faux cambro (cooler) for 1-4hrs (better yet real cambro)
-- Slice against grain at last minute (meat dries fast)
+   Stage I (pre‑stall): logistic growth,
+   Stage II (stall): linear,
+   Stage III (post‑stall): logistic growth
+   Stall when |α(t)| ≤ 0.03 (α = f'/f, units h⁻¹) and 150‑170°F internal
+- Let rest in (faux) cambro 1‑4 h
+- Slice against the grain at the last minute
 """
 
+# ============================ Conversation Class ============================
+
 class ClaudeBBQConversation:
-    def __init__(self, api_key, target_pit=225, target_meat=203, meat_type="brisket", weight=12, phone=None):
-        self.client = anthropic.Anthropic(api_key=api_key)
-        self.target_pit = target_pit
-        self.target_meat = target_meat
-        self.meat_type = meat_type
-        self.weight = weight
-        self.phone = phone
+    def __init__(self, api_key, target_pit=225, target_meat=203,
+                 meat_type="brisket", weight=12, phone=None):
 
-        # conversation state
-        self.messages = []
-        self.data_queue = queue.Queue()
-        self.temp_history = deque(maxlen=120)  # 1hr at 30s intervals
-        self.start_time = datetime.now()
-        self.last_update = None
-        self.ambient_temp = None
+        self.client       = anthropic.Anthropic(api_key=api_key)
+        self.target_pit   = target_pit
+        self.target_meat  = target_meat
+        self.meat_type    = meat_type
+        self.weight       = weight
+        self.phone        = phone
 
-        # track alert states to prevent spam
-        self.alert_states = {
-            'pit_crash': False,
-            'pit_spike': False,
-            'stall_approaching': False
-        }
+        # conversation & telemetry state
+        self.messages      = []
+        self.data_queue    = queue.Queue()
+        self.temp_history  = deque(maxlen=720)  # keep ~6 h at 30 s cadence
+        self.start_time    = datetime.now()
+        self.last_update   = None
+        self.ambient_temp  = None
+
+        # SMS spam prevention
+        self.alert_states  = {'pit_crash': False,
+                              'pit_spike': False,
+                              'stall_approaching': False}
         self.last_sms_time = {}
-        self.sms_cooldown = 900  # 15min between same alert type
+        self.sms_cooldown  = int(os.getenv("BBQ_SMS_COOLDOWN", "900"))
 
-        # init conversation
-        init_msg = f"""You're helping me smoke a {weight}lb {meat_type}. Target pit: {target_pit}°F, target meat: {target_meat}°F.
+        # ---------------- new model‑fitting fields ----------------
+        self.model_params  = None       # (K, k, λ, D, γ)
+        self.eta_wrap      = None
+        self.eta_finish    = None
+        self.model_rmse    = None
+        # ----------------------------------------------------------
+
+        init_msg = f"""You're helping me smoke a {weight} lb {meat_type}.
+Target pit: {target_pit} °F. Target meat: {target_meat} °F.
 
 {PITMASTER_WISDOM}
 
-I'll send you temp updates and tell you what I'm doing. Give brief, specific advice. Be casual.
+I'll feed you temp updates and notes.  Reply with brief, specific, casual advice.
 
 Starting the cook now."""
-
         self.messages.append({"role": "user", "content": init_msg})
-        response = self._ask_claude()
-        print(f"\n🤖 {response}\n")
+        print(f"\n🤖 {self._ask_claude()}\n")
+
+    # --------------------------------------------------------------------- #
+    #                            Utility methods                            #
+    # --------------------------------------------------------------------- #
 
     def send_sms(self, message, alert_type="general"):
-        """send sms via txtbelt if not in cooldown"""
         if not self.phone:
             return
-
-        # rate limit by alert type
-        if alert_type in self.last_sms_time:
-            elapsed = (datetime.now() - self.last_sms_time[alert_type]).seconds
-            if elapsed < self.sms_cooldown:
-                return
+        last = self.last_sms_time.get(alert_type)
+        if last and (datetime.now() - last).seconds < self.sms_cooldown:
+            return  # still in cooldown
 
         try:
             resp = requests.post('https://textbelt.com/text', {
                 'phone': self.phone,
                 'message': f"BBQ: {message}",
-                'key': os.environ.get('TXTBELT_KEY', 'textbelt')
-            })
-
-            if resp.json().get('success'):
+                'key': os.getenv('TXTBELT_KEY', 'textbelt')
+            }).json()
+            if resp.get('success'):
                 self.last_sms_time[alert_type] = datetime.now()
                 print(f"\n📱 SMS sent: {message}")
             else:
-                print(f"\n📱 SMS failed: {resp.json()}")
-
+                print(f"\n📱 SMS failed: {resp}")
         except Exception as e:
             print(f"\n📱 SMS error: {e}")
 
-    def check_critical_conditions(self, data):
-        pit = data['pit']
-        meat = data['meat']
-
-        # pit emergencies
-        if pit < self.target_pit - 75:
-            if not self.alert_states['pit_crash']:
-                self.alert_states['pit_crash'] = True
-                self.send_sms(f"pit crashed to {pit:.0f}°F - add fuel NOW", "pit_crash")
-                self.handle_user_input("pit temp crashed bad, what to do?")
-        else:
-            self.alert_states['pit_crash'] = False
-
-        if pit > self.target_pit + 50:
-            if not self.alert_states['pit_spike']:
-                self.alert_states['pit_spike'] = True
-                self.send_sms(f"pit spiked to {pit:.0f}°F - close vents", "pit_spike")
-        else:
-            self.alert_states['pit_spike'] = False
-
-        # meat milestones
-        if 148 < meat < 152 and len(self.temp_history) > 10:
-            # approaching stall
-            recent_meat = [d['meat'] for d in list(self.temp_history)[-10:]]
-            if max(recent_meat) - min(recent_meat) < 3:
-                if not self.alert_states['stall_approaching']:
-                    self.alert_states['stall_approaching'] = True
-                    self.send_sms(f"stall incoming at {meat:.0f}°F - wrap now?", "stall")
-        else:
-            self.alert_states['stall_approaching'] = False
-
-        # one-time milestones don't need state tracking
-        if 195 < meat < 200:
-            self.send_sms(f"almost done! meat at {meat:.0f}°F", "done_soon")
-
-        elif meat >= self.target_meat:
-            self.send_sms(f"DONE - meat hit {meat:.0f}°F", "done")
-
     def _ask_claude(self, user_msg=None):
-        """send current convo to claude"""
         if user_msg:
             self.messages.append({"role": "user", "content": user_msg})
 
@@ -146,200 +126,280 @@ Starting the cook now."""
             response = self.client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=300,
-                temperature=0.5,
-                messages=self.messages
+                temperature=0.2,          # safer, less hallucination
+                messages=self.messages[-20:]  # keep prompt size sane
             )
-
             content = response.content[0].text
             self.messages.append({"role": "assistant", "content": content})
             return content
-
         except Exception as e:
             return f"claude broke: {e}"
 
-    def process_temp_update(self, data):
-        """handle new temp data"""
-        self.temp_history.append(data)
-        self.last_update = data['time']
+    # --------------------------------------------------------------------- #
+    #                        Temperature & alerts                           #
+    # --------------------------------------------------------------------- #
 
-        # status line
-        cook_time = (datetime.now() - self.start_time).total_seconds() / 3600
-        status = f"\r[{data['time'].strftime('%H:%M')}] pit:{data['pit']:.0f}°F meat:{data['meat']:.0f}°F"
+    def check_critical_conditions(self, data):
+        pit  = data['pit']
+        meat = data['meat']
 
-        if self.ambient_temp:
-            status += f" outside:{self.ambient_temp:.0f}°F"
+        if pit < self.target_pit - 75:
+            if not self.alert_states['pit_crash']:
+                self.alert_states['pit_crash'] = True
+                self.send_sms(f"Pit crashed to {pit:.0f}°F – add fuel NOW", "pit_crash")
+                self.handle_user_input("pit temp crashed, what to do?")
+        else:
+            self.alert_states['pit_crash'] = False
 
-        status += f" | {cook_time:.1f}hrs"
-        print(status)  # removed \r and end='', just print normally
+        if pit > self.target_pit + 50:
+            if not self.alert_states['pit_spike']:
+                self.alert_states['pit_spike'] = True
+                self.send_sms(f"Pit spiked to {pit:.0f}°F – close vents", "pit_spike")
+        else:
+            self.alert_states['pit_spike'] = False
 
-        # check for oh shit moments
-        self.check_critical_conditions(data)
+        if 148 < meat < 152 and len(self.temp_history) > 10:
+            recent_meat = [d['meat'] for d in list(self.temp_history)[-10:]]
+            if max(recent_meat) - min(recent_meat) < 3:
+                if not self.alert_states['stall_approaching']:
+                    self.alert_states['stall_approaching'] = True
+                    self.send_sms(f"Stall incoming at {meat:.0f}°F – wrap now?", "stall")
+        else:
+            self.alert_states['stall_approaching'] = False
+
+        if 195 < meat < 200:
+            self.send_sms(f"Almost done! Meat at {meat:.0f}°F", "done_soon")
+        elif meat >= self.target_meat:
+            self.send_sms(f"DONE – meat hit {meat:.0f}°F", "done")
+
+    # ---------------------------- Stall detector --------------------------
 
     def detect_stall_mathematical(self):
-        """fancy stall detection"""
+        """Return True if Henderson stall criterion is met."""
         if len(self.temp_history) < 10:
             return False
 
-        # need at least 5min of data
         recent = list(self.temp_history)[-10:]
-        times = [(d['time'] - recent[0]['time']).total_seconds() / 60 for d in recent]
-        temps = [d['meat'] for d in recent]
+        times_s = [(d['time'] - recent[0]['time']).total_seconds() for d in recent]
+        temps_f = [d['meat'] for d in recent]
 
-        # finite diff for derivative
-        if len(temps) < 3:
+        if len(set(times_s)) < 3:
+            return False  # timestamps not distinct
+
+        # centred 3‑point finite diff on last 3 samples
+        t1, t0, tm1 = times_s[-1], times_s[-2], times_s[-3]
+        f1, f0, fm1 = temps_f[-1], temps_f[-2], temps_f[-3]
+
+        dt_hours = (t1 - tm1) / 3600.0
+        if dt_hours == 0:
             return False
 
-        # smoothed derivative using 3-point formula
-        dt = times[1] - times[0] if times[1] != times[0] else 1
-        f_prime = (temps[-1] - temps[-3]) / (2 * dt)
+        f_prime = (f1 - fm1) / (2 * dt_hours)  # °F h⁻¹
+        alpha   = f_prime / f0                 # h⁻¹
 
-        # exponential growth rate α(t) = f'(t)/f(t)
-        if temps[-2] > 0:  # sanity check
-            alpha = f_prime / temps[-2]
+        return 150 <= f0 <= 170 and abs(alpha) <= 0.03
 
-            # stall when |α(t)| ≤ 0.03 per the paper
-            if abs(alpha) <= 0.03 and 150 < temps[-2] < 170:
-                return True
+    # --------------------------------------------------------------------- #
+    #                     Logistic model & ETA calculation                  #
+    # --------------------------------------------------------------------- #
 
-        return False
+    def _logistic5(self, t, K, k, lam, D, gamma):
+        """Five‑parameter logistic (5PL) in °F."""
+        return D + (K - D) / ((1 + math.exp(-k * (t - lam))) ** gamma)
+
+    def _update_model_estimate(self):
+        """Fit Stage I logistic curve and compute ETA."""
+        if curve_fit is None:
+            return  # SciPy not available
+
+        one_hour_ago = datetime.now() - timedelta(hours=1)
+        stage1_pts = [(d['time'], d['meat'])
+                      for d in self.temp_history
+                      if d['time'] >= one_hour_ago and d['meat'] <= 150]
+
+        if len(stage1_pts) < 15:
+            return
+
+        t0 = stage1_pts[0][0]
+        t_hours = [(pt[0] - t0).total_seconds() / 3600 for pt in stage1_pts]
+        temps   = [pt[1] for pt in stage1_pts]
+
+        D_init   = temps[0]
+        K_init   = self.target_meat
+        k_init   = 1.0
+        lam_init = t_hours[len(t_hours)//2]
+        gamma_init = 1.0
+
+        try:
+            popt, _ = curve_fit(
+                self._logistic5, t_hours, temps,
+                p0=[K_init, k_init, lam_init, D_init, gamma_init],
+                maxfev=8000
+            )
+            self.model_params = popt
+            K, k, lam, D, gamma = popt
+
+            self.eta_wrap = self.start_time + timedelta(
+                hours=lam + (t0 - self.start_time).total_seconds()/3600)
+
+            # inverse 5PL to solve for t when meat == target_meat
+            target_T = self.target_meat
+            if target_T < K:
+                ratio = (K - D) / (target_T - D)
+                t_target = lam - (1/k) * math.log(ratio ** (1/gamma) - 1)
+                self.eta_finish = self.start_time + timedelta(
+                    hours=t_target + (t0 - self.start_time).total_seconds()/3600)
+            else:
+                self.eta_finish = None
+
+            # RMSE on full history
+            full_t = [(d['time'] - t0).total_seconds()/3600
+                      for d in self.temp_history]
+            preds  = [self._logistic5(ti, *popt) for ti in full_t]
+            full_y = [d['meat'] for d in self.temp_history]
+            mse = sum((y - p) ** 2 for y, p in zip(full_y, preds)) / len(full_y)
+            self.model_rmse = math.sqrt(mse)
+
+        except Exception:
+            pass  # silently ignore fit failures
+
+    # --------------------------------------------------------------------- #
+    #                        Display & conversation                         #
+    # --------------------------------------------------------------------- #
 
     def get_temp_summary(self):
-        """summarize recent temps for claude"""
         if len(self.temp_history) < 2:
             return "no temp data yet"
 
-        recent = list(self.temp_history)[-20:]  # last 10min
-        pit_temps = [d['pit'] for d in recent]
-        meat_temps = [d['meat'] for d in recent]
+        recent = list(self.temp_history)[-20:]
+        pit_t   = [d['pit']  for d in recent]
+        meat_t  = [d['meat'] for d in recent]
 
-        pit_now = pit_temps[-1]
-        meat_now = meat_temps[-1]
-        pit_trend = pit_temps[-1] - pit_temps[0]
-        meat_rate = (meat_temps[-1] - meat_temps[0]) / (len(meat_temps) / 2) if len(meat_temps) > 1 else 0
+        pit_now, meat_now = pit_t[-1], meat_t[-1]
+        pit_trend = pit_t[-1] - pit_t[0]
+        meat_rate = (meat_t[-1] - meat_t[0]) * 3  # ≈°F/hr over 10 min
 
         ambient_str = f"{self.ambient_temp:.0f}°F" if self.ambient_temp else "Unknown"
 
-        return f"Temps: pit {pit_now:.0f}°F ({pit_trend:+.1f}/10min), meat {meat_now:.0f}°F ({meat_rate:+.1f}°F/hr), ambient: {ambient_str}"
+        summary = (f"Temps: pit {pit_now:.0f}°F ({pit_trend:+.1f}/10 min), "
+                   f"meat {meat_now:.0f}°F ({meat_rate:+.1f}°F/hr), "
+                   f"ambient {ambient_str}")
+
+        if self.eta_finish and self.eta_wrap:
+            hrs_left = (self.eta_finish - datetime.now()).total_seconds()/3600
+            summary += (f" | ETA wrap {self.eta_wrap.strftime('%H:%M')}, "
+                        f"finish {self.eta_finish.strftime('%H:%M')} "
+                        f"({hrs_left:.1f} h) "
+                        f"RMSE {self.model_rmse:.1f}°F" if self.model_rmse else "")
+        return summary
 
     def handle_user_input(self, user_input):
-        """process what user types"""
-        # add temp context
         msg = f"{user_input}\n\nCurrent: {self.get_temp_summary()}"
+        print()
+        print(f"\n🤖 {self._ask_claude(msg)}\n")
 
-        print()  # newline after status
-        response = self._ask_claude(msg)
-        print(f"\n🤖 {response}\n")
+    # --------------------------------------------------------------------- #
+    #                          Sensor / event loop                          #
+    # --------------------------------------------------------------------- #
 
     def temp_reader_thread(self):
-        """background thread running rtl_433"""
         try:
-            # grab both thermopro and lacrosse
-            cmd = "rtl_433 -F json"
-
-            print(f"starting rtl_433...")
             proc = subprocess.Popen(
-                cmd.split(),
+                ["rtl_433", "-F", "json"],
                 stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 universal_newlines=True
             )
-
             for line in proc.stdout:
                 try:
                     data = json.loads(line.strip())
-
-                    # bbq thermometer
-                    if data.get('model') == 'Thermopro-TP12':
+                    model = data.get('model')
+                    if model == 'Thermopro-TP12':
                         parsed = {
                             'time': datetime.strptime(data['time'], '%Y-%m-%d %H:%M:%S'),
-                            'pit': data['temperature_1_C'] * 9/5 + 32,  # C to F
+                            'pit':  data['temperature_1_C'] * 9/5 + 32,
                             'meat': data['temperature_2_C'] * 9/5 + 32
                         }
                         self.data_queue.put(parsed)
 
-                    # neighbor's weather station
-                    elif data.get('model') == 'LaCrosse-TX141Bv3':
+                    elif model == 'LaCrosse-TX141Bv3':
                         self.ambient_temp = data['temperature_C'] * 9/5 + 32
-
-                except:
+                except json.JSONDecodeError:
                     pass
-
+        except FileNotFoundError:
+            print("rtl_433 not found. Is it installed and on PATH?")
         except Exception as e:
             print(f"rtl_433 died: {e}")
 
+    def process_temp_update(self, data):
+        self.temp_history.append(data)
+        self.last_update = data['time']
+
+        self._update_model_estimate()       # refresh logistic model
+
+        cook_time = (datetime.now() - self.start_time).total_seconds() / 3600
+        status = f"[{data['time'].strftime('%H:%M')}] pit:{data['pit']:.0f}°F meat:{data['meat']:.0f}°F"
+        if self.ambient_temp:
+            status += f" outside:{self.ambient_temp:.0f}°F"
+        status += f" | {cook_time:.1f} h"
+        print(status)
+
+        self.check_critical_conditions(data)
+
     def run(self):
-        """main loop handling user input and temp updates"""
-        # start temp reader thread
         temp_thread = threading.Thread(target=self.temp_reader_thread, daemon=True)
         temp_thread.start()
 
-        print("type stuff to tell claude (or 'quit' to exit)")
-        print("examples: 'just added 10 briquettes', 'wrapped it', 'windy af today'")
+        print("Type to chat with Claude (or 'quit').  Examples:")
+        print("  just added 10 briquettes")
+        print("  wrapped the brisket")
+        print("  windy AF today")
         print("-" * 50)
 
         while True:
-            # check for temp updates
             while not self.data_queue.empty():
                 self.process_temp_update(self.data_queue.get())
 
-            # simple user input since stdin is free now
+            # non‑blocking stdin (POSIX only)
             try:
                 import select
                 if sys.stdin in select.select([sys.stdin], [], [], 0.1)[0]:
                     user_input = input().strip()
-
                     if user_input.lower() == 'quit':
-                        break
-                    elif user_input:
+                        return
+                    if user_input:
                         self.handle_user_input(user_input)
-            except:
+            except Exception:
                 pass
 
-            # periodic check-ins
-            if self.last_update:
-                elapsed = (datetime.now() - self.last_update).seconds
-                if elapsed > 300:  # 5min no data
-                    print("\n⚠️ no temp data for 5min - check your sensor")
+            if self.last_update and (datetime.now() - self.last_update).seconds > 300:
+                print("\n⚠️  No temp data for 5 min – check the sensor")
+
+# ================================ main =====================================
 
 def main():
-    api_key = os.environ.get('ANTHROPIC_API_KEY')
+    api_key = os.getenv('ANTHROPIC_API_KEY')
     if not api_key:
-        print("set ANTHROPIC_API_KEY env var")
+        print("Set ANTHROPIC_API_KEY env var")
         sys.exit(1)
 
-    # setup
     print("=== AI pitmaster ===")
-    meat_type = input("meat type (default: brisket): ").strip() or "brisket"
-    weight = float(input("weight in lbs (default: 12): ").strip() or "12")
-    target_pit = int(input("target pit (default: 225): ").strip() or "225")
-    target_meat = int(input("target meat (default: 203): ").strip() or "203")
+    meat_type  = input("Meat type [brisket]: ").strip() or "brisket"
+    weight     = float(input("Weight in lbs [12]: ").strip() or "12")
+    target_pit = int(input("Target pit temp [225]: ").strip() or "225")
+    target_meat= int(input("Target meat temp [203]: ").strip() or "203")
 
-    print("\nSMS alerts?")
-    phone = os.environ.get('BBQ_PHONE')
-    if not phone:
-        phone = input("phone # for alerts (or skip): ").strip()
-    else:
-        print(f"using phone from BBQ_PHONE env: {phone}")
-
+    phone = os.getenv('BBQ_PHONE') or input("Phone # for SMS (blank to skip): ").strip()
     if phone and not phone.startswith('+'):
         phone = '+1' + phone  # assume US
 
-    print(f"\nstarting {weight}lb {meat_type} cook...")
-    print("rtl_433 will start automatically")
-
-    convo = ClaudeBBQConversation(
-        api_key=api_key,
-        target_pit=target_pit,
-        target_meat=target_meat,
-        meat_type=meat_type,
-        weight=weight,
-        phone=phone
-    )
-
+    print(f"\nStarting {weight} lb {meat_type} cook … rtl_433 will start automatically.\n")
+    convo = ClaudeBBQConversation(api_key, target_pit, target_meat,
+                                  meat_type, weight, phone or None)
     try:
         convo.run()
     except KeyboardInterrupt:
-        print("\n\ncook terminated. bon appetit")
+        print("\nCook terminated. Bon appétit!")
 
 if __name__ == "__main__":
     main()
