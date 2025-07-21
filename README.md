@@ -70,7 +70,7 @@ claude remembers everything and adjusts advice accordingly
 automatic alerts for:
 - pit temp crashes (< target - 75f)
 - pit temp spikes (> target + 50f)  
-- approaching stall (~150f)
+- approaching stall (usually around ~150f but varies so we do some math)
 - almost done (195-200f)
 - done (target temp)
 
