@@ -37,7 +37,7 @@ git clone https://github.com/merbanan/rtl_433.git
 
 ### python deps
 ```bash
-pip install anthropic requests
+pip install -r requirements.txt
 ```
 
 ### environment vars
@@ -50,7 +50,7 @@ export BBQ_PHONE=+15555551234  # optional but recommended
 ## usage
 
 ```bash
-python3 ai-pitmaster.py
+python3 ai_pitmaster.py
 ```
 
 it'll ask for meat type, weight, target temps. then rtl_433 starts automatically and begins monitoring
@@ -73,6 +73,18 @@ automatic alerts for:
 - approaching stall (usually around ~150f but varies so we do some math)
 - almost done (195-200f)
 - done (target temp)
+
+## testing
+
+The project includes unit tests to verify functionality:
+
+```bash
+# Run all tests
+python3 run_tests.py
+
+# Or run directly with pytest
+python3 -m pytest tests -v
+```
 
 ## troubleshooting
 

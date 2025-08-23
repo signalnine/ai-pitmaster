@@ -167,9 +167,10 @@ Starting the cook now."""
         else:
             self.alert_states['stall_approaching'] = False
 
+        # Check if meat is almost done (between 195-200°F) OR has reached target temp
         if 195 < meat < 200:
             self.send_sms(f"Almost done! Meat at {meat:.0f}°F", "done_soon")
-        elif meat >= self.target_meat:
+        if meat >= self.target_meat:
             self.send_sms(f"DONE – meat hit {meat:.0f}°F", "done")
 
     # ---------------------------- Stall detector --------------------------
@@ -287,10 +288,10 @@ Starting the cook now."""
 
         if self.eta_finish and self.eta_wrap:
             hrs_left = (self.eta_finish - datetime.now()).total_seconds()/3600
+            rmse_str = f" RMSE {self.model_rmse:.1f}°F" if self.model_rmse else ""
             summary += (f" | ETA wrap {self.eta_wrap.strftime('%H:%M')}, "
                         f"finish {self.eta_finish.strftime('%H:%M')} "
-                        f"({hrs_left:.1f} h) "
-                        f"RMSE {self.model_rmse:.1f}°F" if self.model_rmse else "")
+                        f"({hrs_left:.1f} h){rmse_str}")
         return summary
 
     def handle_user_input(self, user_input):
