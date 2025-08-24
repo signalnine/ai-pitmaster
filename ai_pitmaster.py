@@ -29,22 +29,26 @@ except ModuleNotFoundError:
 
 PITMASTER_WISDOM = """
 Key BBQ knowledge:
-- Target pit temp: 225-235°F for low and slow
-- Brisket done at 195-205°F internal (probe slides in like butter)
-- The stall hits around 150-170°F, can last 5+ hours
-- The stall can be shortened by increasing cook temperature but it's a balancing act – too hot and it risks making the meat dry and tough; it can be done up to 325°F for pork shoulder but brisket is riskier and you should at most take temps up to 275°F if you have to for timing purposes
-- Texas Crutch (wrapping in foil or paper at 150°F) powers through stall by trapping moisture but can soften the bark
-- Inject with beef broth for moisture (≈1 oz per lb)
-- Salt 12‑24 h ahead (2‑4 h minimum)
-- Trim fat cap to 1/4", remove silverskin
-- Brisket can take ~1.5 h/lb at 225°F, ~1.2 h/lb at 250°F, but varies per cook
+- Target pit temp: 225-235°F for low and slow. Can go up to 275°F for quicker cooks (e.g., pulled pork for timing), but risk of dryness increases.
+- Brisket done at 195-205°F internal (probe slides in like butter). Slice against the grain.
+- Pork Shoulder/Butt (for pulled pork) done at 195-205°F (sometimes up to 210°F), often pulled when probe goes in like butter or "jiggles like jello". Let rest 1-2 hours before pulling.
+- Pork Ribs done when they bend easily and meat starts to pull back from bones (bend test), or internal temp of 195-205°F. Memphis style (dry rub), KC style (sauce on finish).
+- The stall hits around 150-170°F for all these meats, can last 3-5+ hours. It's a plateau where moisture evaporates, cooling the meat.
+- The stall can be shortened by increasing cook temperature but it's a balancing act – too hot and it risks making the meat dry and tough; it can be done up to 325°F for pork shoulder but brisket is riskier and you should at most take temps up to 275°F if you have to for timing purposes.
+- Texas Crutch (wrapping in foil or paper) powers through stall by trapping moisture but can soften the bark. Wrap brisket around 150-170°F. Wrap pork shoulder often around 160-170°F. Wrap ribs after 2-3 hours or when bark is set.
+- Inject with beef broth for brisket moisture (≈1 oz per lb). Pork shoulder often injected with apple juice or other liquids.
+- Salt 12‑24 h ahead (2‑4 h minimum).
+- Brisket: Trim fat cap to 1/4", remove silverskin.
+- Pork Shoulder: No need to trim extensively, fat renders.
+- Pork Ribs: Remove membrane from bone side for better seasoning penetration and tenderness.
+- Brisket can take ~1.5 h/lb at 225°F, ~1.2 h/lb at 250°F.
+- Pork Shoulder can take ~1.5-2 h/lb.
+- Pork Ribs can take 5-6 hours using 3-2-1 method (unwrapped 3h, wrapped 2h, sauce 1h) or longer for "low and slow".
 - Smoking meat has three stages:
-   Stage I (pre‑stall): logistic growth,
-   Stage II (stall): linear,
-   Stage III (post‑stall): logistic growth
-   Stall when |α(t)| ≤ 0.03 (α = f'/f, units h⁻¹) and 150‑170°F internal
-- Let rest in (faux) cambro 1‑4 h
-- Slice against the grain at the last minute
+   Stage I (pre‑stall): Rapid temp rise, logistic growth.
+   Stage II (stall): Temperature plateaus, linear or slow rise.
+   Stage III (post‑stall): Temperature rises again towards target, logistic growth.
+   Stall when |α(t)| ≤ 0.03 (α = f'/f, units h⁻¹) and 150‑170°F internal.
 """
 
 # ============================ Conversation Class ============================

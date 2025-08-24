@@ -196,3 +196,22 @@ def test_send_sms_no_phone():
     # This should not raise an exception
     result = convo.send_sms("Test message")
     assert result is None  # Function returns None when no phone is provided
+
+
+def test_pitmaster_wisdom_content():
+    """Test that PITMASTER_WISDOM contains key information for ribs and pulled pork"""
+    # Check for keywords related to ribs
+    assert "Pork Ribs" in ai_pitmaster.PITMASTER_WISDOM
+    assert "bend test" in ai_pitmaster.PITMASTER_WISDOM
+    assert "Memphis style" in ai_pitmaster.PITMASTER_WISDOM
+    assert "KC style" in ai_pitmaster.PITMASTER_WISDOM
+    assert "Remove membrane" in ai_pitmaster.PITMASTER_WISDOM  # Adjusted to match actual text
+    
+    # Check for keywords related to pulled pork
+    assert "Pork Shoulder/Butt" in ai_pitmaster.PITMASTER_WISDOM
+    assert "pulled pork" in ai_pitmaster.PITMASTER_WISDOM
+    assert "jiggles like jello" in ai_pitmaster.PITMASTER_WISDOM
+    assert "apple juice" in ai_pitmaster.PITMASTER_WISDOM
+    
+    # Check for general updated information
+    assert "275°F" in ai_pitmaster.PITMASTER_WISDOM # Higher temp mention
