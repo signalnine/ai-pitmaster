@@ -78,6 +78,17 @@ class ClaudeBBQConversation:
                               'stall_approaching': False}
         self.last_sms_time = {}
         self.sms_cooldown  = int(os.getenv("BBQ_SMS_COOLDOWN", "900"))
+        
+        # Display and monitoring control
+        self.last_display_time = None
+        self.display_interval = int(os.getenv("BBQ_DISPLAY_INTERVAL", "120"))  # seconds between temp displays
+        self.last_proactive_check = datetime.now()
+        self.proactive_check_interval = int(os.getenv("BBQ_PROACTIVE_INTERVAL", "300"))  # seconds between proactive checks
+        
+        # Context tracking for smarter alerts
+        self.recent_user_actions = deque(maxlen=10)  # track last 10 user inputs with timestamps
+        self.last_fuel_mention = None
+        self.temp_recovery_in_progress = False
 
         # ---------------- new model‑fitting fields ----------------
         self.model_params  = None       # (K, k, λ, D, γ)
@@ -176,6 +187,66 @@ Starting the cook now."""
             self.send_sms(f"Almost done! Meat at {meat:.0f}°F", "done_soon")
         if meat >= self.target_meat:
             self.send_sms(f"DONE – meat hit {meat:.0f}°F", "done")
+
+    def check_gradual_trends(self, data):
+        """Check for concerning gradual trends and speak up proactively with context awareness"""
+        if len(self.temp_history) < 20:
+            return
+            
+        recent = list(self.temp_history)[-20:]  # last ~10 minutes of data
+        pit_temps = [d['pit'] for d in recent]
+        now = datetime.now()
+        
+        # Check for sustained pit temp decline
+        if len(pit_temps) >= 10:
+            early_avg = sum(pit_temps[:5]) / 5
+            late_avg = sum(pit_temps[-5:]) / 5
+            decline = early_avg - late_avg
+            
+            # Check if temperature is recovering after fuel addition
+            if self.temp_recovery_in_progress:
+                if decline < 5:  # temp stabilized or improving
+                    self.temp_recovery_in_progress = False
+                else:
+                    # Still declining despite fuel - that's concerning
+                    pass
+            
+            # Only alert if decline is significant AND we haven't recently discussed fuel
+            if decline >= 15:
+                should_alert = self._should_alert_about_temp_decline(now, decline)
+                if should_alert:
+                    print(f"\n⚠️  Pit temp trending down: -{decline:.0f}°F over recent readings")
+                    self.handle_user_input("pit temp declining steadily, should I add fuel?")
+
+    def _should_alert_about_temp_decline(self, now, decline):
+        """Use contextual reasoning to decide if we should alert about temperature decline"""
+        
+        # Don't alert if we just mentioned fuel (give time for recovery)
+        if self.last_fuel_mention:
+            minutes_since_fuel = (now - self.last_fuel_mention).total_seconds() / 60
+            if minutes_since_fuel < 15:  # Give 15 minutes for fuel to take effect
+                return False
+        
+        # Check recent user messages for fuel-related context
+        recent_fuel_discussion = False
+        for action in list(self.recent_user_actions)[-5:]:  # last 5 messages
+            time_diff = (now - action['time']).total_seconds() / 60
+            if time_diff < 20:  # within 20 minutes
+                fuel_keywords = ['fuel', 'coal', 'wood', 'charcoal', 'briquette', 'added', 'add', 'fire']
+                if any(keyword in action['message'] for keyword in fuel_keywords):
+                    recent_fuel_discussion = True
+                    break
+        
+        # Don't alert if we recently discussed fuel unless it's been a while
+        if recent_fuel_discussion:
+            return decline >= 25  # Only alert for severe declines if we recently discussed fuel
+        
+        # If temperature is actively recovering, don't alert
+        if self.temp_recovery_in_progress:
+            return decline >= 20  # Higher threshold during recovery
+        
+        # Default case - alert for significant declines
+        return decline >= 15
 
     # ---------------------------- Stall detector --------------------------
 
@@ -299,6 +370,20 @@ Starting the cook now."""
         return summary
 
     def handle_user_input(self, user_input):
+        # Track user actions for context
+        now = datetime.now()
+        self.recent_user_actions.append({
+            'time': now,
+            'message': user_input.lower(),
+            'input': user_input
+        })
+        
+        # Track fuel-related mentions
+        fuel_keywords = ['fuel', 'coal', 'wood', 'charcoal', 'briquette', 'added', 'add']
+        if any(keyword in user_input.lower() for keyword in fuel_keywords):
+            self.last_fuel_mention = now
+            self.temp_recovery_in_progress = True
+        
         msg = f"{user_input}\n\nCurrent: {self.get_temp_summary()}"
         print()
         print(f"\n🤖 {self._ask_claude(msg)}\n")
@@ -342,14 +427,27 @@ Starting the cook now."""
 
         self._update_model_estimate()       # refresh logistic model
 
-        cook_time = (datetime.now() - self.start_time).total_seconds() / 3600
+        now = datetime.now()
+        cook_time = (now - self.start_time).total_seconds() / 3600
         status = f"[{data['time'].strftime('%H:%M')}] pit:{data['pit']:.0f}°F meat:{data['meat']:.0f}°F"
         if self.ambient_temp:
             status += f" outside:{self.ambient_temp:.0f}°F"
         status += f" | {cook_time:.1f} h"
-        print(status)
+        # Only display temps periodically to reduce noise
+        if (self.last_display_time is None or 
+            (now - self.last_display_time).total_seconds() >= self.display_interval):
+            print(status)
+            self.last_display_time = now
+        else:
+            # Show simple progress indicator between displays
+            print(".", end="", flush=True)
 
         self.check_critical_conditions(data)
+        
+        # Proactive monitoring for gradual trends
+        if (now - self.last_proactive_check).total_seconds() >= self.proactive_check_interval:
+            self.check_gradual_trends(data)
+            self.last_proactive_check = now
 
     def run(self):
         temp_thread = threading.Thread(target=self.temp_reader_thread, daemon=True)
