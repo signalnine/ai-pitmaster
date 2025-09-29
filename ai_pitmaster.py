@@ -139,7 +139,7 @@ Starting the cook now."""
 
         try:
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model="claude-sonnet-4-20250514",
                 max_tokens=300,
                 temperature=0.2,          # safer, less hallucination
                 messages=self.messages[-20:]  # keep prompt size sane
