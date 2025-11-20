@@ -14,6 +14,8 @@ import threading
 import queue
 import subprocess
 import math
+import glob
+import shutil
 from datetime import datetime, timedelta
 from collections import deque
 
@@ -29,33 +31,38 @@ except ModuleNotFoundError:
 
 PITMASTER_WISDOM = """
 Key BBQ knowledge:
-- Target pit temp: 225-235°F for low and slow. Can go up to 275°F for quicker cooks (e.g., pulled pork for timing), but risk of dryness increases.
+- Target pit temp: 225-235°F for low and slow. Can go up to 275°F for quicker cooks (e.g., pulled pork for timing), but risk of dryness increases. Turkey often done at 275-325°F for crispy skin.
 - Brisket done at 195-205°F internal (probe slides in like butter). Slice against the grain.
 - Pork Shoulder/Butt (for pulled pork) done at 195-205°F (sometimes up to 210°F), often pulled when probe goes in like butter or "jiggles like jello". Let rest 1-2 hours before pulling.
 - Pork Ribs done when they bend easily and meat starts to pull back from bones (bend test), or internal temp of 195-205°F. Memphis style (dry rub), KC style (sauce on finish).
-- The stall hits around 150-170°F for all these meats, can last 3-5+ hours. It's a plateau where moisture evaporates, cooling the meat.
+- Turkey done at 165°F breast temp (USDA safe), but many prefer 170-175°F breast for better texture. Dark meat safe at 165°F but better at 175-180°F. Turkey doesn't stall like pork/brisket. Spatchcocking recommended for even cooking.
+- The stall hits around 150-170°F for pork and brisket, can last 3-5+ hours. It's a plateau where moisture evaporates, cooling the meat. Turkey typically doesn't stall significantly.
 - The stall can be shortened by increasing cook temperature but it's a balancing act – too hot and it risks making the meat dry and tough; it can be done up to 325°F for pork shoulder but brisket is riskier and you should at most take temps up to 275°F if you have to for timing purposes.
-- Texas Crutch (wrapping in foil or paper) powers through stall by trapping moisture but can soften the bark. Wrap brisket around 150-170°F. Wrap pork shoulder often around 160-170°F. Wrap ribs after 2-3 hours or when bark is set.
-- Inject with beef broth for brisket moisture (≈1 oz per lb). Pork shoulder often injected with apple juice or other liquids.
-- Salt 12‑24 h ahead (2‑4 h minimum).
+- Texas Crutch (wrapping in foil or paper) powers through stall by trapping moisture but can soften the bark. Wrap brisket around 150-170°F. Wrap pork shoulder often around 160-170°F. Wrap ribs after 2-3 hours or when bark is set. Turkey generally not wrapped - want crispy skin.
+- Inject with beef broth for brisket moisture (≈1 oz per lb). Pork shoulder often injected with apple juice or other liquids. Turkey benefits from butter/herb injection or brining (wet or dry) 12-24 hours ahead.
+- Salt 12‑24 h ahead (2‑4 h minimum). For turkey, dry brine with salt/herbs 24h ahead highly recommended for moisture and flavor.
 - Brisket: Trim fat cap to 1/4", remove silverskin.
 - Pork Shoulder: No need to trim extensively, fat renders.
 - Pork Ribs: Remove membrane from bone side for better seasoning penetration and tenderness.
+- Turkey: Remove giblets, pat dry thoroughly (especially if brined). Tuck wing tips, tie legs if desired. Can spatchcock for faster/more even cooking.
 - Brisket can take ~1.5 h/lb at 225°F, ~1.2 h/lb at 250°F.
 - Pork Shoulder can take ~1.5-2 h/lb.
 - Pork Ribs can take 5-6 hours using 3-2-1 method (unwrapped 3h, wrapped 2h, sauce 1h) or longer for "low and slow".
+- Turkey can take ~30-40 min/lb at 225-250°F (~4-6 hours for 12-14 lb bird), or 15-20 min/lb at 325°F. Spatchcocked turkey cooks faster.
 - Smoking meat has three stages:
    Stage I (pre‑stall): Rapid temp rise, logistic growth.
    Stage II (stall): Temperature plateaus, linear or slow rise.
    Stage III (post‑stall): Temperature rises again towards target, logistic growth.
    Stall when |α(t)| ≤ 0.03 (α = f'/f, units h⁻¹) and 150‑170°F internal.
+   Note: Turkey typically doesn't exhibit significant stall behavior like pork/brisket.
 """
 
 # ============================ Conversation Class ============================
 
 class ClaudeBBQConversation:
     def __init__(self, api_key, target_pit=225, target_meat=203,
-                 meat_type="brisket", weight=12, phone=None):
+                 meat_type="brisket", weight=12, phone=None,
+                 session_file=".bbq_session.json"):
 
         self.client       = anthropic.Anthropic(api_key=api_key)
         self.target_pit   = target_pit
@@ -63,6 +70,7 @@ class ClaudeBBQConversation:
         self.meat_type    = meat_type
         self.weight       = weight
         self.phone        = phone
+        self.session_file = session_file
 
         # conversation & telemetry state
         self.messages      = []
@@ -84,6 +92,10 @@ class ClaudeBBQConversation:
         self.display_interval = int(os.getenv("BBQ_DISPLAY_INTERVAL", "120"))  # seconds between temp displays
         self.last_proactive_check = datetime.now()
         self.proactive_check_interval = int(os.getenv("BBQ_PROACTIVE_INTERVAL", "300"))  # seconds between proactive checks
+
+        # Session persistence
+        self.last_save_time = None
+        self.save_interval = int(os.getenv("BBQ_SAVE_INTERVAL", "60"))  # seconds between auto-saves
         
         # Context tracking for smarter alerts
         self.recent_user_actions = deque(maxlen=10)  # track last 10 user inputs with timestamps
@@ -111,6 +123,144 @@ Starting the cook now."""
     # --------------------------------------------------------------------- #
     #                            Utility methods                            #
     # --------------------------------------------------------------------- #
+
+    def save_session(self):
+        """Save current session state to disk."""
+        session_data = {
+            'metadata': {
+                'meat_type': self.meat_type,
+                'weight': self.weight,
+                'target_pit': self.target_pit,
+                'target_meat': self.target_meat,
+            },
+            'start_time': self.start_time.isoformat(),
+            'last_update': self.last_update.isoformat() if self.last_update else None,
+            'ambient_temp': self.ambient_temp,
+            'messages': self.messages[-20:],  # only save last 20 like we send to Claude
+            'temp_history': [
+                {
+                    'time': d['time'].isoformat(),
+                    'pit': d['pit'],
+                    'meat': d['meat']
+                }
+                for d in list(self.temp_history)
+            ],
+            'alert_states': self.alert_states,
+            'last_sms_time': {
+                k: v.isoformat() for k, v in self.last_sms_time.items()
+            },
+            'recent_user_actions': [
+                {
+                    'time': a['time'].isoformat(),
+                    'message': a['message'],
+                    'input': a['input']
+                }
+                for a in list(self.recent_user_actions)
+            ],
+            'last_fuel_mention': self.last_fuel_mention.isoformat() if self.last_fuel_mention else None,
+            'temp_recovery_in_progress': self.temp_recovery_in_progress,
+            'last_display_time': self.last_display_time.isoformat() if self.last_display_time else None,
+            'last_proactive_check': self.last_proactive_check.isoformat(),
+            'model_params': self.model_params,
+            'eta_wrap': self.eta_wrap,
+            'eta_finish': self.eta_finish,
+            'model_rmse': self.model_rmse,
+        }
+
+        try:
+            with open(self.session_file, 'w') as f:
+                json.dump(session_data, f, indent=2)
+        except Exception as e:
+            print(f"⚠️  Failed to save session: {e}")
+
+    @classmethod
+    def load_session(cls, api_key, session_file=".bbq_session.json", phone=None):
+        """Load a previous session from disk."""
+        try:
+            with open(session_file, 'r') as f:
+                data = json.load(f)
+
+            # Create instance without calling initial Claude conversation
+            instance = cls.__new__(cls)
+            instance.client = anthropic.Anthropic(api_key=api_key)
+            instance.session_file = session_file
+            instance.phone = phone
+
+            # Restore metadata
+            metadata = data['metadata']
+            instance.meat_type = metadata['meat_type']
+            instance.weight = metadata['weight']
+            instance.target_pit = metadata['target_pit']
+            instance.target_meat = metadata['target_meat']
+
+            # Restore state
+            instance.start_time = datetime.fromisoformat(data['start_time'])
+            instance.last_update = datetime.fromisoformat(data['last_update']) if data['last_update'] else None
+            instance.ambient_temp = data['ambient_temp']
+            instance.messages = data['messages']
+
+            # Restore temperature history
+            instance.temp_history = deque(
+                [
+                    {
+                        'time': datetime.fromisoformat(d['time']),
+                        'pit': d['pit'],
+                        'meat': d['meat']
+                    }
+                    for d in data['temp_history']
+                ],
+                maxlen=720
+            )
+
+            # Restore alert states
+            instance.alert_states = data['alert_states']
+            instance.last_sms_time = {
+                k: datetime.fromisoformat(v) for k, v in data['last_sms_time'].items()
+            }
+
+            # Restore context tracking
+            instance.recent_user_actions = deque(
+                [
+                    {
+                        'time': datetime.fromisoformat(a['time']),
+                        'message': a['message'],
+                        'input': a['input']
+                    }
+                    for a in data['recent_user_actions']
+                ],
+                maxlen=10
+            )
+            instance.last_fuel_mention = datetime.fromisoformat(data['last_fuel_mention']) if data['last_fuel_mention'] else None
+            instance.temp_recovery_in_progress = data['temp_recovery_in_progress']
+            instance.last_display_time = datetime.fromisoformat(data['last_display_time']) if data['last_display_time'] else None
+            instance.last_proactive_check = datetime.fromisoformat(data['last_proactive_check'])
+
+            # Restore model state
+            instance.model_params = data['model_params']
+            instance.eta_wrap = data['eta_wrap']
+            instance.eta_finish = data['eta_finish']
+            instance.model_rmse = data['model_rmse']
+
+            # Restore config values from env
+            instance.sms_cooldown = int(os.getenv("BBQ_SMS_COOLDOWN", "900"))
+            instance.display_interval = int(os.getenv("BBQ_DISPLAY_INTERVAL", "120"))
+            instance.proactive_check_interval = int(os.getenv("BBQ_PROACTIVE_INTERVAL", "300"))
+            instance.save_interval = int(os.getenv("BBQ_SAVE_INTERVAL", "60"))
+
+            # Non-persistent state
+            instance.data_queue = queue.Queue()
+            instance.last_save_time = datetime.now()  # reset save timer
+
+            cook_hours = (datetime.now() - instance.start_time).total_seconds() / 3600
+            print(f"\n✅ Session restored! Cook time: {cook_hours:.1f}h, {len(instance.temp_history)} temp readings\n")
+
+            return instance
+
+        except FileNotFoundError:
+            return None
+        except Exception as e:
+            print(f"⚠️  Failed to load session: {e}")
+            return None
 
     def send_sms(self, message, alert_type="general"):
         if not self.phone:
@@ -388,6 +538,9 @@ Starting the cook now."""
         print()
         print(f"\n🤖 {self._ask_claude(msg)}\n")
 
+        # Save session after user interaction (important state change)
+        self.save_session()
+
     # --------------------------------------------------------------------- #
     #                          Sensor / event loop                          #
     # --------------------------------------------------------------------- #
@@ -443,11 +596,17 @@ Starting the cook now."""
             print(".", end="", flush=True)
 
         self.check_critical_conditions(data)
-        
+
         # Proactive monitoring for gradual trends
         if (now - self.last_proactive_check).total_seconds() >= self.proactive_check_interval:
             self.check_gradual_trends(data)
             self.last_proactive_check = now
+
+        # Auto-save session periodically
+        if (self.last_save_time is None or
+            (now - self.last_save_time).total_seconds() >= self.save_interval):
+            self.save_session()
+            self.last_save_time = now
 
     def run(self):
         temp_thread = threading.Thread(target=self.temp_reader_thread, daemon=True)
@@ -478,6 +637,143 @@ Starting the cook now."""
             if self.last_update and (datetime.now() - self.last_update).seconds > 300:
                 print("\n⚠️  No temp data for 5 min – check the sensor")
 
+# ================================ Session Management =======================
+
+def get_session_filename(start_time=None):
+    """Generate timestamped session filename."""
+    if start_time is None:
+        start_time = datetime.now()
+    timestamp = start_time.strftime('%Y-%m-%d_%H%M%S')
+    return f".bbq_session_{timestamp}.json"
+
+def find_latest_session():
+    """Find the most recent session file."""
+    pattern = ".bbq_session_*.json"
+    sessions = glob.glob(pattern)
+    if not sessions:
+        return None
+    # Sort by filename (which includes timestamp)
+    sessions.sort(reverse=True)
+    return sessions[0]
+
+def get_session_age(session_file):
+    """Get age of session in hours from filename timestamp."""
+    try:
+        # Extract timestamp from filename: .bbq_session_2025-11-20_093015.json
+        basename = os.path.basename(session_file)
+        timestamp_str = basename.replace('.bbq_session_', '').replace('.json', '')
+        session_time = datetime.strptime(timestamp_str, '%Y-%m-%d_%H%M%S')
+        age = (datetime.now() - session_time).total_seconds() / 3600
+        return age
+    except (ValueError, IndexError):
+        return None
+
+def archive_old_sessions(max_age_hours=48):
+    """Archive sessions older than max_age_hours to .bbq_archive/ directory."""
+    pattern = ".bbq_session_*.json"
+    sessions = glob.glob(pattern)
+
+    archive_dir = ".bbq_archive"
+    archived_count = 0
+
+    for session_file in sessions:
+        age = get_session_age(session_file)
+        if age and age > max_age_hours:
+            # Create archive directory if it doesn't exist
+            if not os.path.exists(archive_dir):
+                os.makedirs(archive_dir)
+
+            # Move to archive
+            dest = os.path.join(archive_dir, os.path.basename(session_file))
+            shutil.move(session_file, dest)
+            archived_count += 1
+            print(f"📦 Archived old session: {os.path.basename(session_file)} ({age:.1f}h old)")
+
+    return archived_count
+
+def list_archived_sessions():
+    """List all archived sessions."""
+    archive_dir = ".bbq_archive"
+    if not os.path.exists(archive_dir):
+        return []
+
+    pattern = os.path.join(archive_dir, ".bbq_session_*.json")
+    sessions = glob.glob(pattern)
+    sessions.sort(reverse=True)
+    return sessions
+
+def generate_session_mailto(session_file, recipient="gabe@signalnine.net"):
+    """Generate mailto link to share session data for analysis."""
+    import urllib.parse
+    import base64
+
+    try:
+        with open(session_file, 'r') as f:
+            session_data = f.read()
+
+        # Get basic metadata for subject line
+        data = json.loads(session_data)
+        metadata = data.get('metadata', {})
+        meat_type = metadata.get('meat_type', 'unknown')
+        weight = metadata.get('weight', '?')
+        start_time = data.get('start_time', 'unknown')
+
+        subject = f"AI Pitmaster Session Data: {weight}lb {meat_type} ({start_time[:10]})"
+
+        # Truncate data if too long for mailto (some email clients have limits)
+        max_body_length = 8000
+        if len(session_data) > max_body_length:
+            body = (
+                f"Session data for {weight}lb {meat_type}\n\n"
+                f"(Session data too large for email - {len(session_data)} chars)\n"
+                f"Please attach the session file: {session_file}\n\n"
+                f"Or paste the first part:\n\n{session_data[:max_body_length]}\n\n..."
+            )
+        else:
+            body = (
+                f"Session data for {weight}lb {meat_type}\n\n"
+                f"```json\n{session_data}\n```\n\n"
+                f"Feel free to analyze this data to improve AI Pitmaster!"
+            )
+
+        mailto_url = f"mailto:{recipient}?subject={urllib.parse.quote(subject)}&body={urllib.parse.quote(body)}"
+
+        return mailto_url
+
+    except Exception as e:
+        return f"Error generating mailto link: {e}"
+
+def print_share_instructions():
+    """Print instructions for sharing session data."""
+    archived = list_archived_sessions()
+    if not archived:
+        print("\nNo archived sessions to share yet.")
+        return
+
+    print("\n" + "=" * 60)
+    print("📊 Share Your Cook Data")
+    print("=" * 60)
+    print("\nHelp improve AI Pitmaster by sharing your archived sessions!")
+    print(f"\nYou have {len(archived)} archived session(s):")
+
+    for i, session in enumerate(archived[:5], 1):  # Show first 5
+        basename = os.path.basename(session)
+        try:
+            with open(session, 'r') as f:
+                data = json.load(f)
+            metadata = data.get('metadata', {})
+            print(f"  {i}. {metadata.get('meat_type', '?')} ({metadata.get('weight', '?')}lb) - {basename}")
+        except:
+            print(f"  {i}. {basename}")
+
+    print("\nTo share your data:")
+    print("  1. Run: python3 -c \"from ai_pitmaster import generate_session_mailto; print(generate_session_mailto('.bbq_archive/SESSION_FILE.json'))\"")
+    print("  2. Open the generated mailto: link in your browser")
+    print("  3. Send the email!")
+    print("\nYour data helps improve stall detection, ETA predictions, and")
+    print("cooking advice for everyone. Thank you!")
+    print("=" * 60)
+
 # ================================ main =====================================
 
 def main():
@@ -487,6 +783,50 @@ def main():
         sys.exit(1)
 
     print("=== AI pitmaster ===")
+
+    # Archive old sessions first
+    archived_count = archive_old_sessions(max_age_hours=48)
+
+    # Show sharing instructions if there are archived sessions
+    if archived_count > 0:
+        print_share_instructions()
+
+    # Check for existing recent session
+    session_file = find_latest_session()
+    if session_file:
+        age = get_session_age(session_file)
+        if age is not None and age <= 48:
+            try:
+                with open(session_file, 'r') as f:
+                    session_data = json.load(f)
+                metadata = session_data['metadata']
+                start_time = datetime.fromisoformat(session_data['start_time'])
+                elapsed = (datetime.now() - start_time).total_seconds() / 3600
+
+                print(f"\n📂 Found recent session:")
+                print(f"   {metadata['weight']} lb {metadata['meat_type']}")
+                print(f"   Started: {start_time.strftime('%Y-%m-%d %H:%M')}")
+                print(f"   Age: {age:.1f} hours")
+                print(f"   Temp readings: {len(session_data['temp_history'])}")
+
+                restore = input("\nRestore this session? [Y/n]: ").strip().lower()
+                if restore != 'n':
+                    phone = os.getenv('BBQ_PHONE') or input("Phone # for SMS (blank to skip): ").strip()
+                    if phone and not phone.startswith('+'):
+                        phone = '+1' + phone
+
+                    convo = ClaudeBBQConversation.load_session(api_key, session_file, phone or None)
+                    if convo:
+                        try:
+                            convo.run()
+                        except KeyboardInterrupt:
+                            convo.save_session()
+                            print("\n💾 Session saved. Bon appétit!")
+                        return
+            except Exception as e:
+                print(f"⚠️  Could not read session file: {e}")
+                print("Starting fresh session...\n")
+
     meat_type  = input("Meat type [brisket]: ").strip() or "brisket"
     weight     = float(input("Weight in lbs [12]: ").strip() or "12")
     target_pit = int(input("Target pit temp [225]: ").strip() or "225")
@@ -497,12 +837,17 @@ def main():
         phone = '+1' + phone  # assume US
 
     print(f"\nStarting {weight} lb {meat_type} cook … rtl_433 will start automatically.\n")
+    # Generate timestamped session filename
+    session_filename = get_session_filename()
+
     convo = ClaudeBBQConversation(api_key, target_pit, target_meat,
-                                  meat_type, weight, phone or None)
+                                  meat_type, weight, phone or None,
+                                  session_file=session_filename)
     try:
         convo.run()
     except KeyboardInterrupt:
-        print("\nCook terminated. Bon appétit!")
+        convo.save_session()
+        print("\n💾 Session saved. Bon appétit!")
 
 if __name__ == "__main__":
     main()

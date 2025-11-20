@@ -23,3 +23,7 @@ wheels/
 
 # Pytest
 .pytest_cache/
+# Session files
+.bbq_session_*.json
+.bbq_session_*.json
+.bbq_archive/

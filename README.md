@@ -44,7 +44,10 @@ pip install -r requirements.txt
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-whatever
 export TXTBELT_KEY=your_txtbelt_key_if_you_want_texts
-export BBQ_PHONE=+15555551234  # optional but recommended 
+export BBQ_PHONE=+15555551234  # optional but recommended
+export BBQ_SMS_COOLDOWN=900    # optional, seconds between SMS per alert type
+export BBQ_DISPLAY_INTERVAL=120  # optional, seconds between temp displays
+export BBQ_SAVE_INTERVAL=60    # optional, seconds between auto-saves
 ```
 
 ## usage
@@ -53,7 +56,22 @@ export BBQ_PHONE=+15555551234  # optional but recommended
 python3 ai_pitmaster.py
 ```
 
-it'll ask for meat type, weight, target temps. then rtl_433 starts automatically and begins monitoring
+if you have an existing session (`.bbq_session.json`), it'll offer to restore it. otherwise it'll ask for meat type, weight, target temps. then rtl_433 starts automatically and begins monitoring
+
+### session persistence
+
+sessions are automatically saved every 60 seconds (configurable via `BBQ_SAVE_INTERVAL`) and after each user message. session files are timestamped (e.g., `.bbq_session_2025-11-20_093015.json`) and include:
+- conversation history (last 20 messages)
+- temperature readings (up to 6 hours)
+- alert states and SMS cooldowns
+- model predictions and ETA estimates
+- context tracking (recent actions, fuel mentions)
+
+if the process is killed or crashes, just restart and it'll automatically offer to restore sessions less than 48 hours old. older sessions are automatically archived to `.bbq_archive/` so they don't clutter your working directory.
+
+### sharing your cook data
+
+if you'd like to help improve ai pitmaster, you can share your archived sessions. when you start the app, it will show instructions for sharing if you have archived sessions. your data helps improve stall detection, eta predictions, and cooking advice for everyone.
 
 ### during the cook
 
@@ -115,7 +133,8 @@ in 2-3hrs now. maybe bump pit to 250 if you're in a hurry but 225 is fine
 
 ## notes
 
-- context isnt persistent, you'll lose it if the process is killed. could add file logging/recovery if you want, I just run it in a screen session
+- sessions are automatically saved to timestamped files (`.bbq_session_YYYY-MM-DD_HHMMSS.json`)
+- sessions older than 48 hours are automatically archived to `.bbq_archive/`
 - the mathematical stall detection is the most experimental part of this, let me know if you see anomalies 
 - ambient temp from weather stations is surprisingly useful, you might need to adjust for your (or your neighbor's in my case) weather station model
 - claude costs like $0.25 per cook at current prices, you could very easily port this to work on your locally hosted LLM or OpenAI or w/e

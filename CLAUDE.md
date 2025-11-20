@@ -16,6 +16,9 @@ python3 run_tests.py
 # Run tests directly with pytest
 python3 -m pytest tests -v
 
+# Run specific test file
+python3 -m pytest tests/test_ai_pitmaster.py -v
+
 # Run the main application
 python3 ai_pitmaster.py
 ```
@@ -26,46 +29,117 @@ python3 ai_pitmaster.py
 pip install -r requirements.txt
 ```
 
+Dependencies: `anthropic`, `requests`, `scipy` (optional), `pytest`
+
 ## Architecture Overview
 
-The application is built around a single main class `ClaudeBBQConversation` in `ai_pitmaster.py` that orchestrates:
+The application is built around a single main class `ClaudeBBQConversation` in `ai_pitmaster.py` (56:403) that orchestrates all functionality.
 
 ### Core Components
-- **Temperature Reading**: Background thread running `rtl_433` to capture wireless thermometer data from Thermopro TP12 devices
-- **Claude Integration**: Maintains conversation context with Anthropic's Claude API for cooking advice
-- **SMS Alerting**: Optional SMS notifications via TextBelt API for critical temperature events
-- **Mathematical Modeling**: Uses SciPy curve fitting to predict cook times with 5-parameter logistic curves
-- **Stall Detection**: Implements Henderson's mathematical stall criterion using finite difference calculations
+
+**Temperature Reading** (ai_pitmaster.py:355-372)
+- Background thread `temp_reader_thread()` runs `rtl_433` subprocess to capture wireless thermometer data
+- Parses JSON output from Thermopro TP12 (or compatible 433MHz devices)
+- Queues temperature data for main loop processing
+- Also captures ambient temperature from nearby weather stations
+
+**Claude Integration** (ai_pitmaster.py:136-151)
+- `_ask_claude()` method maintains conversation context with Anthropic API
+- Uses Claude Sonnet 4 model with temperature=0.2 for consistent advice
+- Keeps last 20 messages in context window to manage token usage
+- Initial context includes `PITMASTER_WISDOM` knowledge base with BBQ fundamentals
+
+**SMS Alerting** (ai_pitmaster.py:115-134)
+- `send_sms()` method uses TextBelt API for critical notifications
+- Per-alert-type cooldown tracking via `last_sms_time` dict to prevent spam
+- Default cooldown: 900 seconds (configurable via `BBQ_SMS_COOLDOWN`)
+- Alert types: `pit_crash`, `pit_spike`, `stall`, `done_soon`, `done`
+
+**Mathematical Modeling** (ai_pitmaster.py:282-330)
+- `_update_model_estimate()` fits 5-parameter logistic curve to Stage I temperature data
+- `_logistic5()` implements the 5PL model: D + (K - D) / ((1 + exp(-k(t - λ)))^γ)
+- Predicts wrap time (150°F) and finish time (target temp)
+- Requires SciPy `curve_fit` - gracefully degrades if unavailable
+- Only fits on last hour of data below 150°F to capture pre-stall behavior
+
+**Stall Detection** (ai_pitmaster.py:253-276)
+- `detect_stall_mathematical()` implements Henderson's criterion
+- Uses centered 3-point finite difference to calculate α (relative rate)
+- Stall detected when: 150°F ≤ meat temp ≤ 170°F AND |α| ≤ 0.03 h⁻¹
+- Based on paper: http://www.tlhiv.org/papers/1-33-T-SouthernBarbeque-TeacherVersion.pdf
+
+**Context-Aware Alerting** (ai_pitmaster.py:191-249)
+- `check_gradual_trends()` monitors for sustained pit temperature declines
+- `_should_alert_about_temp_decline()` uses conversation context to avoid redundant alerts
+- Tracks recent user actions in `recent_user_actions` deque to detect fuel-related mentions
+- Temperature recovery tracking prevents alerts while temp is stabilizing after fuel addition
+
+**Session Persistence** (ai_pitmaster.py:117-251)
+- `save_session()` serializes all cook state to JSON (conversation, temps, alerts, model state)
+- `load_session()` classmethod restores previous session from disk
+- Auto-saves every 60 seconds (configurable via `BBQ_SAVE_INTERVAL`) in `process_temp_update()`
+- Also saves after each user message in `handle_user_input()`
+- Session files: Timestamped format `.bbq_session_YYYY-MM-DD_HHMMSS.json`
+- Saves last 20 conversation messages (matching Claude API context window)
+- Preserves up to 720 temperature readings (~6 hours at 30s cadence)
+
+**Session Management** (ai_pitmaster.py:636-771)
+- `get_session_filename()` generates timestamped filenames
+- `find_latest_session()` finds the most recent session file
+- `get_session_age()` calculates age from filename timestamp
+- `archive_old_sessions()` moves sessions > 48 hours to `.bbq_archive/`
+- `generate_session_mailto()` creates mailto link for sharing session data
+- `print_share_instructions()` displays instructions for sharing archived sessions
+- Sessions < 48 hours automatically offered for restore on startup
+- Older sessions archived to prevent directory clutter
 
 ### Key Data Flow
+
 1. `rtl_433` subprocess captures JSON temperature data from 433MHz wireless thermometer
-2. Data parsed and queued in `temp_reader_thread()`
-3. Main loop processes temperature updates, checks critical conditions, updates predictive models
-4. User can input natural language messages that get contextualized with current temperature data and sent to Claude
-5. Critical temperature events trigger SMS alerts with cooldown logic
+2. Data parsed and queued in `temp_reader_thread()` running in background thread
+3. Main loop (`run()`) processes temperature updates via `_process_temp_data()`
+4. `check_critical_conditions()` evaluates alert thresholds and sends SMS if needed
+5. User inputs natural language messages via `handle_user_input()`
+6. Messages contextualized with current temps/stats and sent to Claude
+7. Display shows periodic temp updates based on `BBQ_DISPLAY_INTERVAL`
 
 ### Configuration
-- Environment variables: `ANTHROPIC_API_KEY` (required), `TXTBELT_KEY`, `BBQ_PHONE`, `BBQ_SMS_COOLDOWN`
-- Interactive setup prompts for meat type, weight, target temperatures
-- No persistent configuration files - all state is runtime only
+
+**Environment Variables**
+- `ANTHROPIC_API_KEY` (required): API key for Claude
+- `TXTBELT_KEY` (optional): TextBelt API key for SMS (defaults to free tier)
+- `BBQ_PHONE` (optional): Phone number for SMS alerts
+- `BBQ_SMS_COOLDOWN` (optional): Seconds between SMS alerts per type (default: 900)
+- `BBQ_DISPLAY_INTERVAL` (optional): Seconds between temp displays (default: 120)
+- `BBQ_PROACTIVE_INTERVAL` (optional): Seconds between proactive checks (default: 300)
+- `BBQ_SAVE_INTERVAL` (optional): Seconds between auto-saves (default: 60)
+
+**Runtime State**
+- Interactive setup prompts for: meat type, weight, target pit temp, target meat temp
+- No persistent configuration files - all state is in-memory only
+- Conversation history stored in `messages` list (last 20 kept for API)
+- Temperature history in `temp_history` deque (maxlen=720, ~6 hours at 30s cadence)
 
 ### Hardware Dependencies
+
 - RTL-SDR dongle (RTL2832U-based) for receiving 433MHz signals
-- Compatible wireless thermometer (Thermopro TP12 tested, others supported by rtl_433)
+- Compatible wireless thermometer (Thermopro TP12 tested, others via rtl_433)
 - `rtl_433` binary must be installed and on PATH
 
 ## Testing Strategy
 
-Tests are located in `tests/` directory using pytest:
-- `test_ai_pitmaster.py`: Core logic testing (stall detection, SMS, critical conditions)  
+Tests in `tests/` directory using pytest:
+- `test_ai_pitmaster.py`: Core logic (stall detection, SMS, critical conditions, model fitting)
 - `test_main.py`: Application flow and integration testing
-- `conftest.py`: Test fixtures and configuration
+- `conftest.py`: Test fixtures and mock configuration
 
-Mock external dependencies (subprocess, API calls) in tests rather than requiring actual hardware.
+All external dependencies (subprocess, HTTP requests, Anthropic API) are mocked - no hardware required.
 
-## Important Notes
+## Important Implementation Notes
 
-- Application is designed for POSIX systems (uses `select` for non-blocking stdin)
-- Context is not persistent - conversation history lost on restart
-- SciPy dependency is optional - ETA prediction gracefully degrades without it
-- Thread safety considerations for temperature data queue and alert state management
+- **POSIX-only**: Uses `select` module for non-blocking stdin (ai_pitmaster.py:~618-625)
+- **Session persistence**: State auto-saved to timestamped files every 60s and after user messages; sessions < 48h auto-restore on startup, older sessions archived (ai_pitmaster.py:117-251, 636-771, main.py:775-833)
+- **Optional dependencies**: SciPy is optional - ETA prediction gracefully disabled without it
+- **Thread safety**: Temperature queue is thread-safe via `queue.Queue`; alert states managed in main thread only
+- **Ambient temp parsing**: Extracts from rtl_433 weather station data when available (ai_pitmaster.py:~555-560)
+- **Data sharing**: Users can generate mailto links to share archived sessions for analysis and improvement of the software
