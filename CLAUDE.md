@@ -43,7 +43,9 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 - Queues temperature data for main loop processing
 - Also captures ambient temperature from nearby weather stations
 
-**Claude Integration** (ai_pitmaster.py:136-151)
+**Claude Integration** (ai_pitmaster.py:285-330)
+- `_estimate_tokens()` estimates token usage (~4 chars per token)
+- `_summarize_old_messages()` manages context window by summarizing when >150K tokens and >50 messages
 - `_ask_claude()` method maintains conversation context with Anthropic API
 - Uses Claude Sonnet 4.5 model with temperature=0.2 for consistent advice
 - Sends full conversation history (200K token context window)
