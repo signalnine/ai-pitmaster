@@ -61,11 +61,11 @@ if you have an existing session (`.bbq_session.json`), it'll offer to restore it
 ### session persistence
 
 sessions are automatically saved every 60 seconds (configurable via `BBQ_SAVE_INTERVAL`) and after each user message. session files are timestamped (e.g., `.bbq_session_2025-11-20_093015.json`) and include:
-- complete conversation history (all messages)
-- complete temperature readings (entire cook)
+- complete conversation history
+- complete temperature readings
 - alert states and SMS cooldowns
 - model predictions and ETA estimates
-- context tracking (recent actions, fuel mentions)
+- context tracking
 
 if the process is killed or crashes, just restart and it'll automatically offer to restore sessions less than 48 hours old. older sessions are automatically archived to `.bbq_archive/` so they don't clutter your working directory.
 

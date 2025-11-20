@@ -80,8 +80,8 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 - Auto-saves every 60 seconds (configurable via `BBQ_SAVE_INTERVAL`) in `process_temp_update()`
 - Also saves after each user message in `handle_user_input()`
 - Session files: Timestamped format `.bbq_session_YYYY-MM-DD_HHMMSS.json`
-- Saves complete conversation history (all messages)
-- Preserves all temperature readings (entire cook duration)
+- Saves complete conversation history
+- Preserves all temperature readings
 
 **Session Management** (ai_pitmaster.py:636-771)
 - `get_session_filename()` generates timestamped filenames
@@ -117,9 +117,9 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 **Runtime State**
 - Interactive setup prompts for: meat type, weight, target pit temp, target meat temp
 - No persistent configuration files - all state is in-memory only
-- Conversation history stored in `messages` list (all messages retained)
-- Temperature history in `temp_history` deque (unlimited, entire cook)
-- Claude API calls use last 20 messages for context window management
+- Conversation history stored in `messages` list
+- Temperature history in `temp_history` deque
+- Claude API calls use last 20 messages for context window
 
 ### Hardware Dependencies
 
