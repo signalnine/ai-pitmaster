@@ -75,7 +75,7 @@ class ClaudeBBQConversation:
         # conversation & telemetry state
         self.messages      = []
         self.data_queue    = queue.Queue()
-        self.temp_history  = deque(maxlen=720)  # keep ~6 h at 30 s cadence
+        self.temp_history  = deque()  # keep all temp readings for complete cook history
         self.start_time    = datetime.now()
         self.last_update   = None
         self.ambient_temp  = None
@@ -136,7 +136,7 @@ Starting the cook now."""
             'start_time': self.start_time.isoformat(),
             'last_update': self.last_update.isoformat() if self.last_update else None,
             'ambient_temp': self.ambient_temp,
-            'messages': self.messages[-20:],  # only save last 20 like we send to Claude
+            'messages': self.messages,  # save all messages for complete history
             'temp_history': [
                 {
                     'time': d['time'].isoformat(),
@@ -209,7 +209,6 @@ Starting the cook now."""
                     }
                     for d in data['temp_history']
                 ],
-                maxlen=720
             )
 
             # Restore alert states
