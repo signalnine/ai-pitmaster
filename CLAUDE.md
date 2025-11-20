@@ -46,7 +46,7 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 **Claude Integration** (ai_pitmaster.py:136-151)
 - `_ask_claude()` method maintains conversation context with Anthropic API
 - Uses Claude Sonnet 4.5 model with temperature=0.2 for consistent advice
-- Keeps last 20 messages in context window to manage token usage
+- Sends full conversation history (200K token context window)
 - Initial context includes `PITMASTER_WISDOM` knowledge base with BBQ fundamentals
 
 **SMS Alerting** (ai_pitmaster.py:115-134)
@@ -119,7 +119,7 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 - No persistent configuration files - all state is in-memory only
 - Conversation history stored in `messages` list
 - Temperature history in `temp_history` deque
-- Claude API calls use last 20 messages for context window
+- Claude API receives full conversation history
 
 ### Hardware Dependencies
 

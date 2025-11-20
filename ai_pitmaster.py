@@ -290,8 +290,8 @@ Starting the cook now."""
             response = self.client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=300,
-                temperature=0.2,          # safer, less hallucination
-                messages=self.messages[-20:]  # keep prompt size sane
+                temperature=0.2,
+                messages=self.messages
             )
             content = response.content[0].text
             self.messages.append({"role": "assistant", "content": content})
