@@ -47,6 +47,8 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 - `_ask_claude()` method maintains conversation context with Anthropic API
 - Uses Claude Sonnet 4.5 model with temperature=0.2 for consistent advice
 - Sends full conversation history (200K token context window)
+- Automatically summarizes old messages if approaching context limit (>150K tokens)
+- Keeps initial context + last 40 messages when summarizing
 - Initial context includes `PITMASTER_WISDOM` knowledge base with BBQ fundamentals
 
 **SMS Alerting** (ai_pitmaster.py:115-134)
