@@ -45,7 +45,7 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 
 **Claude Integration** (ai_pitmaster.py:136-151)
 - `_ask_claude()` method maintains conversation context with Anthropic API
-- Uses Claude Sonnet 4 model with temperature=0.2 for consistent advice
+- Uses Claude Sonnet 4.5 model with temperature=0.2 for consistent advice
 - Keeps last 20 messages in context window to manage token usage
 - Initial context includes `PITMASTER_WISDOM` knowledge base with BBQ fundamentals
 
