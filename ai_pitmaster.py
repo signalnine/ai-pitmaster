@@ -282,9 +282,41 @@ Starting the cook now."""
         except Exception as e:
             print(f"\n📱 SMS error: {e}")
 
+    def _estimate_tokens(self, messages):
+        """Rough token estimate: ~4 chars per token"""
+        total_chars = sum(len(str(m.get('content', ''))) for m in messages)
+        return total_chars // 4
+
+    def _summarize_old_messages(self):
+        """Summarize old messages if approaching context window limit."""
+        estimated_tokens = self._estimate_tokens(self.messages)
+
+        # If over 150K tokens (~75% of 200K), summarize older messages
+        if estimated_tokens > 150000 and len(self.messages) > 50:
+            initial_msg = self.messages[0]
+            messages_to_summarize = self.messages[1:-40]
+            recent_messages = self.messages[-40:]
+
+            # Build summary
+            summary_content = "Summary of earlier cook session:\n"
+            for msg in messages_to_summarize:
+                role = msg['role']
+                content = msg['content'][:200]
+                summary_content += f"[{role}] {content}\n"
+
+            summary_msg = {
+                "role": "user",
+                "content": f"{summary_content}\n(Earlier messages summarized to save context.)"
+            }
+
+            self.messages = [initial_msg, summary_msg] + recent_messages
+            print(f"📝 Summarized conversation history (~{estimated_tokens} tokens)")
+
     def _ask_claude(self, user_msg=None):
         if user_msg:
             self.messages.append({"role": "user", "content": user_msg})
+
+        self._summarize_old_messages()
 
         try:
             response = self.client.messages.create(

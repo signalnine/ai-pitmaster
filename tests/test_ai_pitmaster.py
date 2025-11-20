@@ -551,3 +551,119 @@ def test_generate_session_mailto(tmp_path):
     assert "subject=" in mailto_url
     assert "brisket" in mailto_url
     assert "12lb" in mailto_url
+
+
+def test_estimate_tokens():
+    """Test token estimation for context window management"""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # Test with simple messages
+    test_messages = [
+        {"role": "user", "content": "a" * 400},  # ~100 tokens
+        {"role": "assistant", "content": "b" * 400}  # ~100 tokens
+    ]
+
+    estimated = convo._estimate_tokens(test_messages)
+    # Should be around 200 tokens (800 chars / 4)
+    assert 190 <= estimated <= 210
+
+    # Test with larger conversation
+    large_messages = [{"role": "user", "content": "c" * 4000} for _ in range(10)]
+    estimated = convo._estimate_tokens(large_messages)
+    # Should be around 10,000 tokens (40,000 chars / 4)
+    assert 9500 <= estimated <= 10500
+
+
+def test_summarize_old_messages_not_triggered():
+    """Test that summarization doesn't trigger with small conversation"""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # Add a few normal messages (won't exceed threshold)
+    initial_count = len(convo.messages)
+    for i in range(10):
+        convo.messages.append({"role": "user", "content": f"message {i}"})
+
+    # Should not summarize (too few tokens and messages)
+    convo._summarize_old_messages()
+
+    # Message count should be unchanged (initial + 10 we added)
+    assert len(convo.messages) == initial_count + 10
+
+
+def test_summarize_old_messages_triggered():
+    """Test that summarization triggers with large conversation"""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # Create a conversation that exceeds 150K tokens
+    # Need ~600K chars to get ~150K tokens
+    initial_msg = convo.messages[0]  # Save the initial system message
+
+    # Add many large messages (simulate long cook session)
+    for i in range(100):
+        # Each message is ~6000 chars = ~1500 tokens
+        # 100 messages * 1500 = 150,000 tokens
+        convo.messages.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"Message {i}: " + ("x" * 6000)
+        })
+
+    messages_before = len(convo.messages)
+
+    # Trigger summarization
+    convo._summarize_old_messages()
+
+    # Should have reduced message count
+    # Should keep: initial + summary + last 40
+    assert len(convo.messages) == 42  # 1 initial + 1 summary + 40 recent
+
+    # First message should still be the initial one
+    assert convo.messages[0] == initial_msg
+
+    # Second message should be the summary
+    assert "Summary of earlier cook session" in convo.messages[1]['content']
+    assert convo.messages[1]['role'] == 'user'
+
+
+def test_summarize_respects_minimum_messages():
+    """Test that summarization requires >50 messages"""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # Add messages that would exceed token threshold but not message count
+    for i in range(30):
+        # Very large messages to exceed token threshold
+        convo.messages.append({
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": "x" * 20000  # ~5000 tokens each
+        })
+
+    messages_before = len(convo.messages)
+
+    # Should not summarize (< 50 messages despite high token count)
+    convo._summarize_old_messages()
+
+    # Message count should be unchanged
+    assert len(convo.messages) == messages_before
