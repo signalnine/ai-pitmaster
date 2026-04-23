@@ -292,6 +292,90 @@ def test_check_critical_conditions_pit_spike():
     assert convo.alert_states['pit_spike'] == True
 
 
+def test_done_soon_alert_relative_to_target_for_low_target_meat():
+    """Regression: 'Almost done!' SMS must be keyed to target_meat, not a
+    hardcoded 195-200 F range.
+
+    Turkey targets ~165 F. Under the hardcoded 195 < meat < 200 check, once
+    meat rolled past 195 F the system fired 'Almost done! Meat at 196 F',
+    even though the bird was already 30 F overdone. The alert must only fire
+    when meat is below target_meat and approaching it (within ~8 F below).
+    """
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=325,
+        target_meat=165,
+        meat_type="turkey",
+        weight=14,
+        phone="+15555551234",
+    )
+    convo.send_sms = Mock()
+
+    # Meat at 196 F for a turkey is 31 F past target -- done_soon must NOT fire.
+    convo.check_critical_conditions({'pit': 325, 'meat': 196})
+
+    done_soon_calls = [
+        call for call in convo.send_sms.call_args_list
+        if len(call.args) >= 2 and call.args[1] == 'done_soon'
+    ]
+    assert not done_soon_calls, (
+        "done_soon fired when meat was far past target -- alert is keyed to "
+        "hardcoded 195-200 instead of target_meat"
+    )
+
+
+def test_done_soon_alert_fires_when_approaching_low_target():
+    """Complement: 'Almost done!' must fire when meat approaches a low target.
+
+    For a 165 F turkey target, meat at 162 F is 3 F below done and should
+    trigger the done_soon SMS. The buggy hardcoded 195-200 range never fires
+    for low-target meats.
+    """
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=325,
+        target_meat=165,
+        meat_type="turkey",
+        weight=14,
+        phone="+15555551234",
+    )
+    convo.send_sms = Mock()
+
+    convo.check_critical_conditions({'pit': 325, 'meat': 162})
+
+    done_soon_calls = [
+        call for call in convo.send_sms.call_args_list
+        if len(call.args) >= 2 and call.args[1] == 'done_soon'
+    ]
+    assert done_soon_calls, (
+        "done_soon did not fire when meat was 3 F below a 165 F target"
+    )
+
+
+def test_done_soon_alert_fires_when_approaching_high_target():
+    """Brisket-style target (203 F): meat at 197 F is 6 F below done and
+    should still trigger the done_soon SMS after the fix."""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+        phone="+15555551234",
+    )
+    convo.send_sms = Mock()
+
+    convo.check_critical_conditions({'pit': 225, 'meat': 197})
+
+    done_soon_calls = [
+        call for call in convo.send_sms.call_args_list
+        if len(call.args) >= 2 and call.args[1] == 'done_soon'
+    ]
+    assert done_soon_calls, (
+        "done_soon must still fire for the classic brisket case"
+    )
+
+
 def test_check_critical_conditions_meat_done():
     """Test meat done detection"""
     convo = ai_pitmaster.ClaudeBBQConversation(

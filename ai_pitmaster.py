@@ -365,8 +365,9 @@ Starting the cook now."""
         else:
             self.alert_states['stall_approaching'] = False
 
-        # Check if meat is almost done (between 195-200°F) OR has reached target temp
-        if 195 < meat < 200:
+        # Fire "almost done" when meat is within 8 F below target, so the
+        # alert is meaningful for turkey (165 F) as well as brisket/pork (203+).
+        if self.target_meat - 8 <= meat < self.target_meat:
             self.send_sms(f"Almost done! Meat at {meat:.0f}°F", "done_soon")
         if meat >= self.target_meat:
             self.send_sms(f"DONE – meat hit {meat:.0f}°F", "done")
