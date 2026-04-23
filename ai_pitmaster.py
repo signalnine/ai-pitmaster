@@ -265,7 +265,7 @@ Starting the cook now."""
         if not self.phone:
             return
         last = self.last_sms_time.get(alert_type)
-        if last and (datetime.now() - last).seconds < self.sms_cooldown:
+        if last and (datetime.now() - last).total_seconds() < self.sms_cooldown:
             return  # still in cooldown
 
         try:
@@ -665,7 +665,7 @@ Starting the cook now."""
             except Exception:
                 pass
 
-            if self.last_update and (datetime.now() - self.last_update).seconds > 300:
+            if self.last_update and (datetime.now() - self.last_update).total_seconds() > 300:
                 print("\n⚠️  No temp data for 5 min – check the sensor")
 
 # ================================ Session Management =======================

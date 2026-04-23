@@ -193,10 +193,75 @@ def test_send_sms_no_phone():
         weight=12
         # No phone parameter
     )
-    
+
     # This should not raise an exception
     result = convo.send_sms("Test message")
     assert result is None  # Function returns None when no phone is provided
+
+
+@patch('requests.post')
+def test_send_sms_cooldown_expired_across_day_boundary(mock_post):
+    """Regression: cooldown check must use total_seconds(), not .seconds.
+
+    timedelta.seconds only returns the seconds-component (0..86399), so a
+    last_sms_time more than 24h in the past would wrap to a small value and
+    falsely appear to still be inside the cooldown window. This suppressed
+    alerts during cooks that span a full day (or sessions restored the next
+    day). Once fixed, an SMS sent >24h ago must NOT block a new one.
+    """
+    mock_response = Mock()
+    mock_response.json.return_value = {'success': True}
+    mock_post.return_value = mock_response
+
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+        phone="+15555551234"
+    )
+    mock_post.reset_mock()
+
+    # Cooldown is 900s. Simulate last SMS sent 1 day + 5 min ago. Real elapsed
+    # is 86700s (well past any cooldown), but timedelta(days=1, minutes=5).seconds
+    # == 300, which is < 900, so the buggy check falsely keeps us in cooldown.
+    convo.sms_cooldown = 900
+    convo.last_sms_time['pit_crash'] = datetime.now() - timedelta(days=1, minutes=5)
+
+    convo.send_sms("Pit crashed", alert_type="pit_crash")
+
+    assert mock_post.called, (
+        "SMS should be sent when last alert was >24h ago, but cooldown check "
+        "blocked it (probably using timedelta.seconds instead of total_seconds)"
+    )
+
+
+@patch('requests.post')
+def test_send_sms_cooldown_still_active_within_window(mock_post):
+    """Cooldown must still block an SMS sent recently within the window."""
+    mock_response = Mock()
+    mock_response.json.return_value = {'success': True}
+    mock_post.return_value = mock_response
+
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+        phone="+15555551234"
+    )
+    mock_post.reset_mock()
+
+    convo.sms_cooldown = 900
+    convo.last_sms_time['pit_crash'] = datetime.now() - timedelta(seconds=60)
+
+    convo.send_sms("Pit crashed again", alert_type="pit_crash")
+
+    assert not mock_post.called, (
+        "SMS should be blocked by cooldown when last alert was 60s ago"
+    )
 
 
 def test_pitmaster_wisdom_content():
