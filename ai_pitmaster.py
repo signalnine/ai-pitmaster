@@ -163,7 +163,7 @@ Starting the cook now."""
             'temp_recovery_in_progress': self.temp_recovery_in_progress,
             'last_display_time': self.last_display_time.isoformat() if self.last_display_time else None,
             'last_proactive_check': self.last_proactive_check.isoformat(),
-            'model_params': self.model_params,
+            'model_params': list(self.model_params) if self.model_params is not None else None,
             'eta_wrap': self.eta_wrap,
             'eta_finish': self.eta_finish,
             'model_rmse': self.model_rmse,

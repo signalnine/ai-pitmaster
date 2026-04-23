@@ -595,6 +595,43 @@ def test_save_session_preserves_conversation():
         assert any("added more charcoal" in msg.get('content', '') for msg in convo2.messages)
 
 
+def test_save_session_serializes_numpy_model_params(tmp_path):
+    """Regression: curve_fit returns popt as a numpy.ndarray. save_session
+    must be able to serialize that without the silent TypeError that
+    previously left session files truncated mid-cook."""
+    import numpy as np
+
+    session_file = tmp_path / "test_session.json"
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+        session_file=str(session_file),
+    )
+    convo.model_params = np.array([203.0, 1.25, 2.5, 70.0, 1.0])
+    convo.model_rmse = 1.23
+
+    convo.save_session()
+
+    # File must exist and contain valid JSON (previously left truncated).
+    assert session_file.exists()
+    with open(session_file, 'r') as f:
+        data = json.load(f)
+
+    # model_params must round-trip as a list of floats with the same values.
+    assert data['model_params'] == pytest.approx([203.0, 1.25, 2.5, 70.0, 1.0])
+
+    # load_session must restore a session written with numpy model_params.
+    convo2 = ai_pitmaster.ClaudeBBQConversation.load_session(
+        api_key="test-key",
+        session_file=str(session_file),
+    )
+    assert convo2 is not None
+    assert list(convo2.model_params) == pytest.approx([203.0, 1.25, 2.5, 70.0, 1.0])
+
+
 def test_session_context_tracking():
     """Test that context tracking (recent actions, fuel mentions) is saved/restored"""
     import tempfile
