@@ -24,6 +24,26 @@ def test_logistic5_function():
     assert abs(result - expected) < 0.01
 
 
+def test_logistic5_numerically_stable_for_large_exp_argument():
+    """_logistic5 must not emit RuntimeWarnings when curve_fit probes
+    parameters that drive -k*(t-lam) to large positive values. The math
+    limit is D (the lower asymptote), and the implementation should
+    reach it without overflow/divide-by-zero."""
+    import warnings
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+    # -k*(t-lam) = -5*(0-200) = 1000 -> exp(1000) overflows without the fix.
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        result = convo._logistic5(0.0, 200.0, 5.0, 200.0, 40.0, 1.0)
+    assert result == pytest.approx(40.0, abs=1e-9)
+
+
 def test_detect_stall_mathematical():
     """Test the mathematical stall detection"""
     convo = ai_pitmaster.ClaudeBBQConversation(

@@ -465,10 +465,23 @@ Starting the cook now."""
     # --------------------------------------------------------------------- #
 
     def _logistic5(self, t, K, k, lam, D, gamma):
-        """Five‑parameter logistic (5PL) in °F."""
-        # np.exp handles both scalar and array t; curve_fit passes arrays.
-        exp = np.exp if np is not None else math.exp
-        return D + (K - D) / ((1 + exp(-k * (t - lam))) ** gamma)
+        """Five-parameter logistic (5PL) in °F.
+
+        Uses the softplus identity log(1+exp(z)) = logaddexp(0, z) so the
+        denominator (1+exp(z))**gamma becomes exp(gamma * logaddexp(0, z)).
+        This stays finite for any z, which matters because curve_fit probes
+        extreme parameter values that would otherwise overflow exp().
+        """
+        z = -k * (t - lam)
+        if np is not None:
+            # curve_fit also probes gamma<0, where the exp blows up at the
+            # asymptote. That's a real inf, not a computational mistake --
+            # silence the warning but let the inf flow into curve_fit.
+            with np.errstate(over='ignore'):
+                return D + (K - D) * np.exp(-gamma * np.logaddexp(0.0, z))
+        # Scalar fallback: numerically-stable softplus.
+        log1pexp = z + math.log1p(math.exp(-z)) if z > 0 else math.log1p(math.exp(z))
+        return D + (K - D) * math.exp(-gamma * log1pexp)
 
     def _update_model_estimate(self):
         """Fit Stage I logistic curve and compute ETA."""
