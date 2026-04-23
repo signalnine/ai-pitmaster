@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "ai_pitmaster",
+  "project_id": "3cfb75b4-f19f-4963-ba2c-f076d90f25aa"
+}

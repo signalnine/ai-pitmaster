@@ -27,3 +27,5 @@ wheels/
 .bbq_session_*.json
 .bbq_session_*.json
 .bbq_archive/
+.dolt/
+*.db
