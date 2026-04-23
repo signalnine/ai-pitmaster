@@ -451,7 +451,9 @@ Starting the cook now."""
         if dt_hours == 0:
             return False
 
-        f_prime = (f1 - fm1) / (2 * dt_hours)  # °F h⁻¹
+        # Centered finite diff: f'(t0) = (f(t0+h) - f(t0-h)) / (2h).
+        # dt_hours already spans t1 - tm1 = 2h, so divide by dt_hours, not 2*dt_hours.
+        f_prime = (f1 - fm1) / dt_hours        # °F h⁻¹
         alpha   = f_prime / f0                 # h⁻¹
 
         return 150 <= f0 <= 170 and abs(alpha) <= 0.03

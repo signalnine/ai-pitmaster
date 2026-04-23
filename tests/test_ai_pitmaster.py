@@ -52,6 +52,67 @@ def test_detect_stall_mathematical():
     assert result in [True, False]  # Should not raise an exception
 
 
+def test_detect_stall_no_false_positive_on_rising_meat():
+    """Regression: centered finite difference must use the correct divisor.
+
+    For 3 samples spaced h apart, f'(t0) = (f(t0+h) - f(t0-h)) / (2h). The
+    full span t1 - tm1 equals 2h, so dividing by that span (dt_hours) is
+    correct. A prior implementation divided by 2*dt_hours, halving the
+    computed derivative and causing false-positive stall detection when the
+    meat was actually rising at roughly 4.5-9 F/hr around 150 F.
+
+    Concrete case: meat rising ~8 F/hr at 150 F -> alpha ~= 0.053. That is
+    above the 0.03 threshold so no stall should be reported. With the old
+    (double-divided) formula, alpha ~= 0.027, which falsely trips the stall
+    check.
+    """
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # 10 samples, 20 seconds apart, meat rising at 8 F/hr through ~150 F.
+    rate_f_per_hr = 8.0
+    dt_seconds = 20
+    base_time = datetime(2026, 1, 1, 12, 0, 0)
+    start_meat = 149.8
+    for i in range(10):
+        convo.temp_history.append({
+            'time': base_time + timedelta(seconds=i * dt_seconds),
+            'pit': 225,
+            'meat': start_meat + rate_f_per_hr * (i * dt_seconds) / 3600.0,
+        })
+
+    # Actual alpha here is ~8/150 = 0.053, well above 0.03 -- not a stall.
+    assert convo.detect_stall_mathematical() is False
+
+
+def test_detect_stall_true_stall_still_detected():
+    """Complement to the regression test: a genuinely flat meat temp in the
+    stall band must still be reported as a stall after the fix."""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    dt_seconds = 20
+    base_time = datetime(2026, 1, 1, 12, 0, 0)
+    for i in range(10):
+        convo.temp_history.append({
+            'time': base_time + timedelta(seconds=i * dt_seconds),
+            'pit': 225,
+            'meat': 160.0,  # flat, in stall band
+        })
+
+    assert convo.detect_stall_mathematical() is True
+
+
 def test_get_temp_summary():
     """Test the temperature summary generation"""
     convo = ai_pitmaster.ClaudeBBQConversation(
