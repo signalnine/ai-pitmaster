@@ -22,10 +22,12 @@ from collections import deque
 import requests
 import anthropic
 
-# ----- optional SciPy for curve fitting -------------------------------------
+# ----- optional SciPy/NumPy for curve fitting -------------------------------
 try:
+    import numpy as np
     from scipy.optimize import curve_fit          # needs scipy >= 1.9
 except ModuleNotFoundError:
+    np = None
     curve_fit = None
 # ----------------------------------------------------------------------------
 
@@ -464,7 +466,9 @@ Starting the cook now."""
 
     def _logistic5(self, t, K, k, lam, D, gamma):
         """Five‑parameter logistic (5PL) in °F."""
-        return D + (K - D) / ((1 + math.exp(-k * (t - lam))) ** gamma)
+        # np.exp handles both scalar and array t; curve_fit passes arrays.
+        exp = np.exp if np is not None else math.exp
+        return D + (K - D) / ((1 + exp(-k * (t - lam))) ** gamma)
 
     def _update_model_estimate(self):
         """Fit Stage I logistic curve and compute ETA."""
@@ -498,8 +502,15 @@ Starting the cook now."""
             self.model_params = popt
             K, k, lam, D, gamma = popt
 
-            self.eta_wrap = self.start_time + timedelta(
-                hours=lam + (t0 - self.start_time).total_seconds()/3600)
+            # inverse 5PL to solve for t when meat == wrap temperature (150 F)
+            wrap_T = 150.0
+            if D < wrap_T < K:
+                ratio_wrap = (K - D) / (wrap_T - D)
+                t_wrap = lam - (1/k) * math.log(ratio_wrap ** (1/gamma) - 1)
+                self.eta_wrap = self.start_time + timedelta(
+                    hours=t_wrap + (t0 - self.start_time).total_seconds()/3600)
+            else:
+                self.eta_wrap = None
 
             # inverse 5PL to solve for t when meat == target_meat
             target_T = self.target_meat

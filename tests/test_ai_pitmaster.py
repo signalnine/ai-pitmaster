@@ -113,6 +113,89 @@ def test_detect_stall_true_stall_still_detected():
     assert convo.detect_stall_mathematical() is True
 
 
+def test_eta_wrap_predicts_150f_crossing_not_inflection(monkeypatch):
+    """Regression: eta_wrap must be the time the fitted 5PL crosses 150 F,
+    not the logistic inflection time.
+
+    The 5PL inflection f(lam) = D + (K - D) / 2^gamma sits near 121 F for a
+    typical cook (D=40, K=203, gamma=1) -- nowhere near the canonical 150 F
+    wrap point. A prior implementation set eta_wrap = lam (inflection), so
+    the reported wrap time fired ~30 minutes too early and recommended a
+    wrap while meat was still ~121 F.
+    """
+    # conftest.py mocks scipy for unit tests; this test needs the real fit.
+    saved = {name: sys.modules.pop(name) for name in list(sys.modules)
+             if name == 'scipy' or name.startswith('scipy.')}
+    try:
+        from scipy.optimize import curve_fit as real_curve_fit
+    except ModuleNotFoundError:
+        for name, mod in saved.items():
+            sys.modules[name] = mod
+        pytest.skip("scipy not installed")
+    # Restore the mocks so the rest of the suite still sees them.
+    for name, mod in saved.items():
+        sys.modules[name] = mod
+    monkeypatch.setattr(ai_pitmaster, 'curve_fit', real_curve_fit)
+
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # Known 5PL parameters chosen so meat stays < 150 within a short window
+    # that fits inside the _update_model_estimate last-hour filter.
+    D_true, K_true, lam_true, k_true, gamma_true = 40.0, 203.0, 0.5, 3.0, 1.0
+
+    # Analytic 150 F crossing from inverse 5PL.
+    ratio = (K_true - D_true) / (150.0 - D_true)
+    t_wrap_hours = lam_true - (1 / k_true) * math.log(
+        ratio ** (1 / gamma_true) - 1
+    )
+
+    now = datetime.now()
+    base_time = now - timedelta(minutes=40)
+    convo.start_time = base_time
+    convo.temp_history.clear()
+
+    for i in range(30):
+        t_offset_hours = i * (36.0 / 60.0) / 29  # span 36 min, 30 points
+        t = base_time + timedelta(hours=t_offset_hours)
+        meat = D_true + (K_true - D_true) / (
+            (1 + math.exp(-k_true * (t_offset_hours - lam_true)))
+            ** gamma_true
+        )
+        convo.temp_history.append({
+            'time': t,
+            'pit': 225.0,
+            'meat': meat,
+        })
+
+    convo._update_model_estimate()
+
+    assert convo.eta_wrap is not None, "eta_wrap should be computed"
+
+    expected_eta_wrap = base_time + timedelta(hours=t_wrap_hours)
+    delta_minutes = (convo.eta_wrap - expected_eta_wrap).total_seconds() / 60
+
+    # Buggy implementation would place eta_wrap at the inflection time (~lam).
+    inflection_eta = base_time + timedelta(hours=lam_true)
+    inflection_delta_minutes = abs(
+        (convo.eta_wrap - inflection_eta).total_seconds() / 60
+    )
+
+    assert abs(delta_minutes) < 3, (
+        f"eta_wrap ({convo.eta_wrap}) not near 150 F crossing "
+        f"({expected_eta_wrap}); delta {delta_minutes:.1f} min."
+    )
+    assert inflection_delta_minutes > 5, (
+        "eta_wrap matches the inflection time, indicating the code still "
+        "treats lam as the wrap time instead of solving the 5PL for 150 F."
+    )
+
+
 def test_get_temp_summary():
     """Test the temperature summary generation"""
     convo = ai_pitmaster.ClaudeBBQConversation(
