@@ -225,7 +225,7 @@ def test_get_temp_summary():
         meat_type="brisket",
         weight=12
     )
-    
+
     # Add some temperature data
     base_time = datetime.now()
     for i in range(25):
@@ -235,11 +235,98 @@ def test_get_temp_summary():
             'meat': 140 + i*2  # Increasing temperature
         }
         convo.temp_history.append(temp_data)
-    
+
     summary = convo.get_temp_summary()
     assert "Temps:" in summary
     assert "pit" in summary
     assert "meat" in summary
+
+
+def test_get_temp_summary_meat_rate_uses_actual_elapsed_time():
+    """Regression: meat_rate must reflect real °F/hr from the last-20 window's
+    actual elapsed time, not a hardcoded multiplier.
+
+    The Thermopro TP12 broadcasts every ~12 s, so 20 readings span ~228 s
+    (~3.8 min). The previous implementation multiplied (last - first) by a
+    constant 3 with the comment '°F/hr over 10 min' -- correct only when the
+    window happened to be 20 minutes long. With realistic 12-s sampling and a
+    true 30 °F/hr meat climb, the buggy code reported ~5.7 °F/hr (≈5x too low),
+    which Claude then used to give bad pacing/ETA advice.
+    """
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    # 20 readings, 12 seconds apart, meat rising at exactly 30 °F/hr.
+    true_rate_f_per_hr = 30.0
+    dt_seconds = 12
+    base_time = datetime(2026, 1, 1, 12, 0, 0)
+    start_meat = 140.0
+    convo.temp_history.clear()
+    for i in range(20):
+        convo.temp_history.append({
+            'time': base_time + timedelta(seconds=i * dt_seconds),
+            'pit': 225.0,
+            'meat': start_meat + true_rate_f_per_hr * (i * dt_seconds) / 3600.0,
+        })
+
+    summary = convo.get_temp_summary()
+
+    # Parse the meat rate value out of the summary string.
+    # Format: "... meat <NOW>°F (<RATE>°F/hr), ..."
+    import re
+    m = re.search(r"meat\s+\d+°F\s+\(([+-]?\d+(?:\.\d+)?)°F/hr\)", summary)
+    assert m is not None, f"could not parse meat rate from summary: {summary!r}"
+    reported_rate = float(m.group(1))
+
+    # Reported rate must be within 1 °F/hr of the true 30 °F/hr.
+    # The buggy implementation reports ~5.7 °F/hr.
+    assert abs(reported_rate - true_rate_f_per_hr) < 1.0, (
+        f"meat_rate reported as {reported_rate} °F/hr but actual is "
+        f"{true_rate_f_per_hr} °F/hr -- rate calculation isn't using the "
+        f"window's real elapsed time."
+    )
+
+
+def test_get_temp_summary_meat_rate_handles_30s_sampling():
+    """Complement: meat_rate must also be correct at other sampling rates.
+    With 30-second sampling, 20 readings span ~9.5 min. The buggy hardcoded
+    multiplier 3 (which assumed ~20 min windows) yields ~half the true rate
+    here, so this exercises the bug at a different scale than the TP12 case."""
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12
+    )
+
+    true_rate_f_per_hr = 12.0
+    dt_seconds = 30
+    base_time = datetime(2026, 1, 1, 12, 0, 0)
+    start_meat = 150.0
+    convo.temp_history.clear()
+    for i in range(20):
+        convo.temp_history.append({
+            'time': base_time + timedelta(seconds=i * dt_seconds),
+            'pit': 225.0,
+            'meat': start_meat + true_rate_f_per_hr * (i * dt_seconds) / 3600.0,
+        })
+
+    summary = convo.get_temp_summary()
+    import re
+    m = re.search(r"meat\s+\d+°F\s+\(([+-]?\d+(?:\.\d+)?)°F/hr\)", summary)
+    assert m is not None, f"could not parse meat rate from summary: {summary!r}"
+    reported_rate = float(m.group(1))
+
+    assert abs(reported_rate - true_rate_f_per_hr) < 1.0, (
+        f"meat_rate reported as {reported_rate} °F/hr but actual is "
+        f"{true_rate_f_per_hr} °F/hr at 30-s sampling."
+    )
 
 
 def test_check_critical_conditions_pit_crash():

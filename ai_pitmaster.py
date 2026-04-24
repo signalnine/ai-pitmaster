@@ -560,12 +560,21 @@ Starting the cook now."""
         meat_t  = [d['meat'] for d in recent]
 
         pit_now, meat_now = pit_t[-1], meat_t[-1]
-        pit_trend = pit_t[-1] - pit_t[0]
-        meat_rate = (meat_t[-1] - meat_t[0]) * 3  # ≈°F/hr over 10 min
+
+        # Use the window's actual elapsed time so the rate is correct
+        # regardless of the thermometer's broadcast interval (TP12: ~12 s).
+        window_seconds = (recent[-1]['time'] - recent[0]['time']).total_seconds()
+        if window_seconds > 0:
+            window_hours = window_seconds / 3600.0
+            pit_rate  = (pit_t[-1]  - pit_t[0])  / window_hours
+            meat_rate = (meat_t[-1] - meat_t[0]) / window_hours
+        else:
+            pit_rate  = 0.0
+            meat_rate = 0.0
 
         ambient_str = f"{self.ambient_temp:.0f}°F" if self.ambient_temp else "Unknown"
 
-        summary = (f"Temps: pit {pit_now:.0f}°F ({pit_trend:+.1f}/10 min), "
+        summary = (f"Temps: pit {pit_now:.0f}°F ({pit_rate:+.1f}°F/hr), "
                    f"meat {meat_now:.0f}°F ({meat_rate:+.1f}°F/hr), "
                    f"ambient {ambient_str}")
 
