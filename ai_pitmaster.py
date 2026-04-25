@@ -10,6 +10,7 @@ AI Pitmaster:
 import json
 import sys
 import os
+import tempfile
 import threading
 import queue
 import subprocess
@@ -170,8 +171,24 @@ Starting the cook now."""
         }
 
         try:
-            with open(self.session_file, 'w') as f:
-                json.dump(session_data, f, indent=2)
+            dest_dir = os.path.dirname(os.path.abspath(self.session_file)) or "."
+            tmp_fd, tmp_path = tempfile.mkstemp(
+                prefix=os.path.basename(self.session_file) + ".",
+                suffix=".tmp",
+                dir=dest_dir,
+            )
+            try:
+                with os.fdopen(tmp_fd, 'w') as f:
+                    json.dump(session_data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self.session_file)
+            except Exception:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+                raise
         except Exception as e:
             print(f"⚠️  Failed to save session: {e}")
 

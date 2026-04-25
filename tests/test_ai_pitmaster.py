@@ -1,5 +1,6 @@
 import pytest
 import sys
+import os
 import json
 from datetime import datetime, timedelta
 from unittest.mock import Mock, patch, MagicMock
@@ -801,6 +802,49 @@ def test_save_session_serializes_numpy_model_params(tmp_path):
     )
     assert convo2 is not None
     assert list(convo2.model_params) == pytest.approx([203.0, 1.25, 2.5, 70.0, 1.0])
+
+
+def test_save_session_is_atomic(tmp_path, monkeypatch):
+    """A crash mid-write must leave the previous valid session file intact."""
+    session_file = tmp_path / "test_session.json"
+
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+        session_file=str(session_file),
+    )
+
+    convo.save_session()
+    assert session_file.exists()
+    good_contents = session_file.read_text()
+    with open(session_file, 'r') as f:
+        json.load(f)
+
+    real_replace = os.replace
+
+    def boom(*args, **kwargs):
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr(os, "replace", boom)
+    convo.messages.append({"role": "user", "content": "would-be-corrupted"})
+    convo.save_session()
+
+    assert session_file.exists()
+    assert session_file.read_text() == good_contents
+    with open(session_file, 'r') as f:
+        json.load(f)
+
+    leftover = [p for p in tmp_path.iterdir() if p.name != session_file.name]
+    assert leftover == [], f"temp files leaked: {leftover}"
+
+    monkeypatch.setattr(os, "replace", real_replace)
+    convo.save_session()
+    with open(session_file, 'r') as f:
+        data = json.load(f)
+    assert any(m.get("content") == "would-be-corrupted" for m in data["messages"])
 
 
 def test_session_context_tracking():
