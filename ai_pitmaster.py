@@ -651,8 +651,11 @@ Starting the cook now."""
 
                     elif model == 'LaCrosse-TX141Bv3':
                         self.ambient_temp = data['temperature_C'] * 9/5 + 32
-                except json.JSONDecodeError:
-                    pass
+                except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+                    # Malformed/partial packet -- skip it and keep reading.
+                    # KeyError: missing field; TypeError: None in math;
+                    # ValueError: bad timestamp format.
+                    print(f"skipping malformed rtl_433 packet: {e}")
         except FileNotFoundError:
             print("rtl_433 not found. Is it installed and on PATH?")
         except Exception as e:

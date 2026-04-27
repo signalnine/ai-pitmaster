@@ -1148,3 +1148,109 @@ def test_summarize_respects_minimum_messages():
 
     # Message count should be unchanged
     assert len(convo.messages) == messages_before
+
+
+# --------------------------------------------------------------------------- #
+# temp_reader_thread resilience (ai-pitmaster-kq8)
+# --------------------------------------------------------------------------- #
+
+
+def _run_temp_reader_with_lines(lines):
+    """Drive temp_reader_thread synchronously with a fixed list of stdout lines.
+
+    Returns (convo, drained_queue_items).
+    """
+    convo = ai_pitmaster.ClaudeBBQConversation(
+        api_key="test-key",
+        target_pit=225,
+        target_meat=203,
+        meat_type="brisket",
+        weight=12,
+    )
+
+    fake_proc = MagicMock()
+    fake_proc.stdout = iter(lines)
+
+    with patch("ai_pitmaster.subprocess.Popen", return_value=fake_proc):
+        convo.temp_reader_thread()
+
+    items = []
+    while not convo.data_queue.empty():
+        items.append(convo.data_queue.get_nowait())
+    return convo, items
+
+
+def _valid_thermopro_line():
+    return json.dumps({
+        "model": "Thermopro-TP12",
+        "time": "2026-04-27 12:00:00",
+        "temperature_1_C": 100.0,
+        "temperature_2_C": 60.0,
+    }) + "\n"
+
+
+def test_temp_reader_skips_thermopro_missing_temperature_1():
+    bad = json.dumps({
+        "model": "Thermopro-TP12",
+        "time": "2026-04-27 12:00:00",
+        "temperature_2_C": 60.0,
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+    assert items[0]["pit"] == pytest.approx(100.0 * 9 / 5 + 32)
+
+
+def test_temp_reader_skips_thermopro_missing_temperature_2():
+    bad = json.dumps({
+        "model": "Thermopro-TP12",
+        "time": "2026-04-27 12:00:00",
+        "temperature_1_C": 100.0,
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+    assert items[0]["meat"] == pytest.approx(60.0 * 9 / 5 + 32)
+
+
+def test_temp_reader_skips_thermopro_with_none_temperature():
+    bad = json.dumps({
+        "model": "Thermopro-TP12",
+        "time": "2026-04-27 12:00:00",
+        "temperature_1_C": None,
+        "temperature_2_C": 60.0,
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+
+
+def test_temp_reader_skips_thermopro_missing_time():
+    bad = json.dumps({
+        "model": "Thermopro-TP12",
+        "temperature_1_C": 100.0,
+        "temperature_2_C": 60.0,
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+
+
+def test_temp_reader_skips_thermopro_with_bad_time_format():
+    bad = json.dumps({
+        "model": "Thermopro-TP12",
+        "time": "not a real timestamp",
+        "temperature_1_C": 100.0,
+        "temperature_2_C": 60.0,
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+
+
+def test_temp_reader_skips_lacrosse_missing_temperature():
+    bad = json.dumps({
+        "model": "LaCrosse-TX141Bv3",
+    }) + "\n"
+    _, items = _run_temp_reader_with_lines([bad, _valid_thermopro_line()])
+    assert len(items) == 1
+
+
+def test_temp_reader_still_handles_json_decode_error():
+    _, items = _run_temp_reader_with_lines(["{not valid json\n", _valid_thermopro_line()])
+    assert len(items) == 1
