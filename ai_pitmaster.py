@@ -789,7 +789,6 @@ def list_archived_sessions():
 def generate_session_mailto(session_file, recipient="gabe@signalnine.net"):
     """Generate mailto link to share session data for analysis."""
     import urllib.parse
-    import base64
 
     try:
         with open(session_file, 'r') as f:
