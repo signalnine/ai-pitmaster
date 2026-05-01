@@ -48,6 +48,9 @@ export BBQ_PHONE=+15555551234  # optional but recommended
 export BBQ_SMS_COOLDOWN=900    # optional, seconds between SMS per alert type
 export BBQ_DISPLAY_INTERVAL=120  # optional, seconds between temp displays
 export BBQ_SAVE_INTERVAL=60    # optional, seconds between auto-saves
+export BBQ_THERMOMETER_MODEL=Thermopro-TP12  # optional, comma-separated rtl_433 model strings
+export BBQ_AMBIENT_MODEL=LaCrosse-TX141Bv3   # optional, comma-separated ambient sensor models
+export BBQ_SENSOR_WARNING_COOLDOWN=300  # optional, seconds between sensor-lost warnings
 ```
 
 ## usage
@@ -111,6 +114,7 @@ python3 -m pytest tests -v
 - if you see something like `Failed to open rtlsdr device #0` there's probably another rtl_433 process, sometimes it doesn't shutdown gracefully, so just `pkill` it
 - make sure thermometer is on and transmitting
 - move dongle closer or use better antenna
+- if you have a non-TP12 thermometer, the app logs unrecognized model strings on startup. once you know what your hardware reports, set `BBQ_THERMOMETER_MODEL` (comma-separated) to enable it. note: parsing currently assumes `temperature_1_C`/`temperature_2_C` fields, so probes that report differently may still need code changes
 
 ### claude being weird
 adjust the temperature in `_ask_claude()`. it's at 0.5 for casual vibes but sometimes claude gets too creative

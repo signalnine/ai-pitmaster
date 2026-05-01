@@ -117,6 +117,9 @@ The application is built around a single main class `ClaudeBBQConversation` in `
 - `BBQ_DISPLAY_INTERVAL` (optional): Seconds between temp displays (default: 120)
 - `BBQ_PROACTIVE_INTERVAL` (optional): Seconds between proactive checks (default: 300)
 - `BBQ_SAVE_INTERVAL` (optional): Seconds between auto-saves (default: 60)
+- `BBQ_THERMOMETER_MODEL` (optional): Comma-separated rtl_433 model strings to accept as pit/meat probes (default: `Thermopro-TP12`)
+- `BBQ_AMBIENT_MODEL` (optional): Comma-separated rtl_433 model strings for ambient temperature sensors (default: `LaCrosse-TX141Bv3`)
+- `BBQ_SENSOR_WARNING_COOLDOWN` (optional): Seconds between repeated "no temp data" warnings (default: 300)
 
 **Runtime State**
 - Interactive setup prompts for: meat type, weight, target pit temp, target meat temp

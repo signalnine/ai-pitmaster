@@ -86,19 +86,34 @@ class ClaudeBBQConversation:
         # SMS spam prevention
         self.alert_states  = {'pit_crash': False,
                               'pit_spike': False,
-                              'stall_approaching': False}
+                              'stall_approaching': False,
+                              'sensor_lost': False}
         self.last_sms_time = {}
         self.sms_cooldown  = int(os.getenv("BBQ_SMS_COOLDOWN", "900"))
+        self.last_sensor_warning = None
+        self.sensor_warning_cooldown = int(os.getenv("BBQ_SENSOR_WARNING_COOLDOWN", "300"))
         
         # Display and monitoring control
         self.last_display_time = None
         self.display_interval = int(os.getenv("BBQ_DISPLAY_INTERVAL", "120"))  # seconds between temp displays
+        self.progress_dots_pending = False  # True when last output was an unterminated progress dot
         self.last_proactive_check = datetime.now()
         self.proactive_check_interval = int(os.getenv("BBQ_PROACTIVE_INTERVAL", "300"))  # seconds between proactive checks
 
         # Session persistence
         self.last_save_time = None
         self.save_interval = int(os.getenv("BBQ_SAVE_INTERVAL", "60"))  # seconds between auto-saves
+
+        # rtl_433 device-model configuration (comma-separated env vars override defaults)
+        self.thermometer_models = [
+            m.strip() for m in os.getenv("BBQ_THERMOMETER_MODEL", "Thermopro-TP12").split(",")
+            if m.strip()
+        ]
+        self.ambient_models = [
+            m.strip() for m in os.getenv("BBQ_AMBIENT_MODEL", "LaCrosse-TX141Bv3").split(",")
+            if m.strip()
+        ]
+        self.unknown_model_log = {}  # model -> last-logged datetime (rate-limit unknown packets)
         
         # Context tracking for smarter alerts
         self.recent_user_actions = deque(maxlen=10)  # track last 10 user inputs with timestamps
@@ -629,6 +644,18 @@ Starting the cook now."""
     #                          Sensor / event loop                          #
     # --------------------------------------------------------------------- #
 
+    def _log_unknown_model(self, model):
+        # Rate-limit per-model logging so users can discover what their hardware
+        # reports without flooding output. Set BBQ_THERMOMETER_MODEL or
+        # BBQ_AMBIENT_MODEL (comma-separated) to add support for these models.
+        now = datetime.now()
+        last = self.unknown_model_log.get(model)
+        if last and (now - last).total_seconds() < 600:
+            return
+        self.unknown_model_log[model] = now
+        print(f"\nℹ️  rtl_433 packet from unrecognized model '{model}' "
+              f"(set BBQ_THERMOMETER_MODEL or BBQ_AMBIENT_MODEL to use it)")
+
     def temp_reader_thread(self):
         try:
             proc = subprocess.Popen(
@@ -641,7 +668,7 @@ Starting the cook now."""
                 try:
                     data = json.loads(line.strip())
                     model = data.get('model')
-                    if model == 'Thermopro-TP12':
+                    if model in self.thermometer_models:
                         parsed = {
                             'time': datetime.strptime(data['time'], '%Y-%m-%d %H:%M:%S'),
                             'pit':  data['temperature_1_C'] * 9/5 + 32,
@@ -649,8 +676,10 @@ Starting the cook now."""
                         }
                         self.data_queue.put(parsed)
 
-                    elif model == 'LaCrosse-TX141Bv3':
+                    elif model in self.ambient_models:
                         self.ambient_temp = data['temperature_C'] * 9/5 + 32
+                    elif model:
+                        self._log_unknown_model(model)
                 except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
                     # Malformed/partial packet -- skip it and keep reading.
                     # KeyError: missing field; TypeError: None in math;
@@ -661,9 +690,21 @@ Starting the cook now."""
         except Exception as e:
             print(f"rtl_433 died: {e}")
 
+    def _flush_progress_dots(self):
+        """Terminate any in-progress dot row so the next line starts fresh."""
+        if self.progress_dots_pending:
+            print()
+            self.progress_dots_pending = False
+
     def process_temp_update(self, data):
         self.temp_history.append(data)
         self.last_update = data['time']
+
+        if self.alert_states.get('sensor_lost'):
+            self.alert_states['sensor_lost'] = False
+            self.last_sensor_warning = None
+            self._flush_progress_dots()
+            print("✅ Sensor data recovered")
 
         self._update_model_estimate()       # refresh logistic model
 
@@ -674,13 +715,15 @@ Starting the cook now."""
             status += f" outside:{self.ambient_temp:.0f}°F"
         status += f" | {cook_time:.1f} h"
         # Only display temps periodically to reduce noise
-        if (self.last_display_time is None or 
+        if (self.last_display_time is None or
             (now - self.last_display_time).total_seconds() >= self.display_interval):
+            self._flush_progress_dots()
             print(status)
             self.last_display_time = now
         else:
             # Show simple progress indicator between displays
             print(".", end="", flush=True)
+            self.progress_dots_pending = True
 
         self.check_critical_conditions(data)
 
@@ -722,7 +765,15 @@ Starting the cook now."""
                 pass
 
             if self.last_update and (datetime.now() - self.last_update).total_seconds() > 300:
-                print("\n⚠️  No temp data for 5 min – check the sensor")
+                now = datetime.now()
+                if (self.last_sensor_warning is None or
+                        (now - self.last_sensor_warning).total_seconds() >= self.sensor_warning_cooldown):
+                    self._flush_progress_dots()
+                    print("⚠️  No temp data for 5 min – check the sensor")
+                    self.last_sensor_warning = now
+                    if not self.alert_states.get('sensor_lost'):
+                        self.alert_states['sensor_lost'] = True
+                        self.send_sms("no temp data for 5 min - check the sensor", alert_type='sensor_lost')
 
 # ================================ Session Management =======================
 
